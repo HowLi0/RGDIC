@@ -990,145 +990,259 @@ void GlobalDIC::evaluateErrors(const Result& result,
     cv::imshow("V Error Map", errorVColorMasked);
 }
 
-// Multi-scale implementation
-GlobalDIC::Result GlobalDIC::computeMultiScale(const cv::Mat& refImage, 
-                                             const cv::Mat& defImage,
-                                             const cv::Mat& roi) {
-    // Create a pyramid of images
-    std::vector<cv::Mat> refPyramid, defPyramid, roiPyramid;
+// Create image pyramid for multi-scale approach (OpenCorr-inspired)
+void GlobalDIC::createImagePyramid(const cv::Mat& image, const cv::Mat& mask, std::vector<Layer>& pyramid) {
+    // Determine the minimum dimension of the input image
+    int dim_min = std::min(image.cols, image.rows);
     
-    refPyramid.push_back(refImage.clone());
-    defPyramid.push_back(defImage.clone());
-    roiPyramid.push_back(roi.clone());
+    // Set the octave and height of pyramid
+    int numOctaves = std::floor(std::log2((float)dim_min) - std::log2((float)m_params.minImageSize.width)) + 1;
+    numOctaves = std::max(1, numOctaves);
     
-    for (int i = 1; i < m_params.numScaleLevels; i++) {
-        cv::Mat refSmaller, defSmaller, roiSmaller;
+    // Calculate layers per octave (including overlap for DoG calculation if needed)
+    int layersPerOctave = 1;  // For simplicity, use 1 layer per octave for now
+    
+    // Total number of layers
+    int numLayers = numOctaves;
+    pyramid.resize(numLayers);
+    
+    // Scale factor between octaves
+    double kappa = 0.5;  // Default scale factor, corresponds to m_params.scaleFactor
+    
+    // Set the bottom layer
+    pyramid[0].img = image.clone();
+    pyramid[0].mask = mask.clone();
+    pyramid[0].octave = 0;
+    pyramid[0].scale = 1.0;
+    pyramid[0].sigma = 0.0;  // No blur for first level
+    
+    // Current dimensions
+    int x_length = image.cols;
+    int y_length = image.rows;
+    
+    // Create the pyramid for both image and mask
+    for (int i = 1; i < numLayers; i++) {
+        // Update dimensions
+        x_length = std::max(static_cast<int>(x_length * kappa), m_params.minImageSize.width);
+        y_length = std::max(static_cast<int>(y_length * kappa), m_params.minImageSize.height);
         
-        // 计算新尺寸并确保不小于最小尺寸
-        cv::Size newSize;
-        cv::Size nextSize;  // 预测下一级的尺寸
+        // Set current layer properties
+        pyramid[i].octave = i;
+        pyramid[i].scale = pyramid[i-1].scale * kappa;
+        pyramid[i].sigma = 0.5;  // Small amount of blur when downsampling
         
-        newSize.width = std::max(static_cast<int>(refPyramid[i-1].cols * m_params.scaleFactor), m_params.minImageSize.width);
-        newSize.height = std::max(static_cast<int>(refPyramid[i-1].rows * m_params.scaleFactor), m_params.minImageSize.height);
+        // Downsample image with Gaussian blur to prevent aliasing
+        cv::Mat blurred;
+        cv::GaussianBlur(pyramid[i-1].img, blurred, cv::Size(0, 0), pyramid[i].sigma);
+        cv::resize(blurred, pyramid[i].img, cv::Size(x_length, y_length), 0, 0, cv::INTER_AREA);
         
-        // 预测下一级
-        nextSize.width = static_cast<int>(newSize.width * m_params.scaleFactor);
-        nextSize.height = static_cast<int>(newSize.height * m_params.scaleFactor);
+        // Downsample mask (nearest neighbor to preserve binary values)
+        cv::resize(pyramid[i-1].mask, pyramid[i].mask, cv::Size(x_length, y_length), 0, 0, cv::INTER_NEAREST);
         
-        // 检查当前级或下一级是否会达到最小尺寸
-        if (newSize.width <= m_params.minImageSize.width || newSize.height <= m_params.minImageSize.height ||
-            nextSize.width < m_params.minImageSize.width || nextSize.height < m_params.minImageSize.height) {
-            std::cout << "Reached minimum image size (" << m_params.minImageSize.width 
-                      << "x" << m_params.minImageSize.height 
-                      << ") at level " << i << ". Stopping pyramid construction." << std::endl;
-            
-            // 确保当前级别的尺寸不小于最小尺寸
-            newSize.width = std::max(newSize.width, m_params.minImageSize.width);
-            newSize.height = std::max(newSize.height, m_params.minImageSize.height);
-            
-            // 处理当前级别然后停止
-            cv::resize(refPyramid[i-1], refSmaller, newSize, 0, 0, cv::INTER_AREA);
-            cv::resize(defPyramid[i-1], defSmaller, newSize, 0, 0, cv::INTER_AREA);
-            cv::resize(roiPyramid[i-1], roiSmaller, newSize, 0, 0, cv::INTER_NEAREST);
-            
-            refPyramid.push_back(refSmaller);
-            defPyramid.push_back(defSmaller);
-            roiPyramid.push_back(roiSmaller);
-            
+        // Check if we've reached the minimum size
+        int nextWidth = static_cast<int>(x_length * kappa);
+        int nextHeight = static_cast<int>(y_length * kappa);
+        
+        if (nextWidth < m_params.minImageSize.width || nextHeight < m_params.minImageSize.height) {
+            // Truncate pyramid if next level would be too small
+            pyramid.resize(i + 1);
             break;
         }
-        else {
-            // 使用新的安全尺寸处理正常情况
-            cv::resize(refPyramid[i-1], refSmaller, newSize, 0, 0, cv::INTER_AREA);
-            cv::resize(defPyramid[i-1], defSmaller, newSize, 0, 0, cv::INTER_AREA);
-            cv::resize(roiPyramid[i-1], roiSmaller, newSize, 0, 0, cv::INTER_NEAREST);
-            
-            refPyramid.push_back(refSmaller);
-            defPyramid.push_back(defSmaller);
-            roiPyramid.push_back(roiSmaller);
-            
-            // 打印当前图像大小信息
-            std::cout << "Scale level " << i << " size: " << newSize.width << "x" << newSize.height << std::endl;
-        }
     }
     
-    // 更新实际的金字塔级别数
-    int actualLevels = refPyramid.size();
-    if (actualLevels < m_params.numScaleLevels) {
-        std::cout << "Note: Using " << actualLevels << " scale levels instead of requested " 
-                  << m_params.numScaleLevels << " due to minimum size constraint." << std::endl;
+    // Print info about pyramid
+    std::cout << "Created image pyramid with " << pyramid.size() << " levels:" << std::endl;
+    for (size_t i = 0; i < pyramid.size(); i++) {
+        std::cout << "  Level " << i << ": " 
+                  << pyramid[i].img.cols << "x" << pyramid[i].img.rows 
+                  << ", scale=" << pyramid[i].scale 
+                  << ", octave=" << pyramid[i].octave << std::endl;
     }
-    
-    // Start from the coarsest level
-    std::reverse(refPyramid.begin(), refPyramid.end());
-    std::reverse(defPyramid.begin(), defPyramid.end());
-    std::reverse(roiPyramid.begin(), roiPyramid.end());
-    
-    // Initialize result at coarsest level
-    Result result(roiPyramid[0].size());
-    result.validMask = roiPyramid[0].clone();
-    
-    // Store original parameters to restore later
-    Parameters origParams = m_params;
-    
-    // Process each level
-    for (int level = 0; level < m_params.numScaleLevels; level++) {
-        std::cout << "Processing scale level " << level + 1 << "/" << m_params.numScaleLevels 
-                  << " (" << refPyramid[level].cols << "x" << refPyramid[level].rows << ")" << std::endl;
-        
-        // Adjust subset radius and node spacing for this level
-        double scaleFactor = 1.0;
-        for (int i = 0; i < level; i++) {
-            scaleFactor /= m_params.scaleFactor;
-        }
-        
-        // Update parameters for current level
-        m_params.subsetRadius = std::max(5, static_cast<int>(origParams.subsetRadius * scaleFactor));
-        m_params.nodeSpacing = std::max(5, static_cast<int>(origParams.nodeSpacing * scaleFactor));
-        
-        if (level > 0) {
-            // Upscale previous result to current level
-            cv::Mat upU, upV, upValid;
-            cv::resize(result.u, upU, refPyramid[level].size(), 0, 0, cv::INTER_LINEAR);
-            cv::resize(result.v, upV, refPyramid[level].size(), 0, 0, cv::INTER_LINEAR);
-            cv::resize(result.validMask, upValid, refPyramid[level].size(), 0, 0, cv::INTER_NEAREST);
-            
-            // Scale displacement values
-            upU /= m_params.scaleFactor;
-            upV /= m_params.scaleFactor;
-            
-            // Use as initial guess
-            result.u = upU;
-            result.v = upV;
-            result.validMask = upValid;
-        }
-        
-        // Process current level
-        Result levelResult = compute(refPyramid[level], defPyramid[level], roiPyramid[level]);
-        
-        // Update result
-        result.u = levelResult.u;
-        result.v = levelResult.v;
-        result.validMask = levelResult.validMask;
-        result.cc = levelResult.cc;
-        result.confidence = levelResult.confidence;
-        result.meanResidual = levelResult.meanResidual;
-        result.iterations = levelResult.iterations;
-    }
-    
-    // Restore original parameters
-    m_params = origParams;
-    
-    // Calculate strain fields
-    calculateStrains(result);
-    
-    return result;
 }
 
+    // Multi-scale implementation with OpenCorr-inspired pyramid approach
+    GlobalDIC::Result GlobalDIC::computeMultiScale(const cv::Mat& refImage, 
+        const cv::Mat& defImage,
+        const cv::Mat& roi) {
+// Create image pyramids
+std::vector<Layer> refPyramid, defPyramid, roiPyramid;
+createImagePyramid(refImage, roi, refPyramid);
+createImagePyramid(defImage, roi, defPyramid);
+
+// Start from the coarsest level (reverse the order)
+std::reverse(refPyramid.begin(), refPyramid.end());
+std::reverse(defPyramid.begin(), defPyramid.end());
+std::reverse(roiPyramid.begin(), roiPyramid.end());
+
+// Initialize result at coarsest level
+Result result(roiPyramid[0].mask.size());
+result.validMask = roiPyramid[0].mask.clone();
+
+// Store original parameters to restore later
+Parameters origParams = m_params;
+
+// Process each level
+for (int level = 0; level < refPyramid.size(); level++) {
+std::cout << "Processing scale level " << level + 1 << "/" << refPyramid.size() 
+<< " (" << refPyramid[level].img.cols << "x" << refPyramid[level].img.rows << ")" << std::endl;
+
+// Adjust subset radius and node spacing for this level based on scale
+double scaleFactor = 1.0 / refPyramid[level].scale;
+
+// Update parameters for current level
+m_params.subsetRadius = std::max(5, static_cast<int>(origParams.subsetRadius * refPyramid[level].scale));
+m_params.nodeSpacing = std::max(5, static_cast<int>(origParams.nodeSpacing * refPyramid[level].scale));
+
+if (level > 0) {
+// Upscale previous result to current level
+cv::Mat upU, upV, upValid;
+cv::resize(result.u, upU, refPyramid[level].img.size(), 0, 0, cv::INTER_LINEAR);
+cv::resize(result.v, upV, refPyramid[level].img.size(), 0, 0, cv::INTER_LINEAR);
+cv::resize(result.validMask, upValid, refPyramid[level].img.size(), 0, 0, cv::INTER_NEAREST);
+
+// Scale displacement values based on image scale change
+double scaleRatio = refPyramid[level].scale / refPyramid[level-1].scale;
+upU /= scaleRatio;
+upV /= scaleRatio;
+
+// Use as initial guess for the current level
+Result initResult(refPyramid[level].img.size());
+initResult.u = upU;
+initResult.v = upV;
+initResult.validMask = upValid;
+
+// Create node grid based on ROI
+std::vector<cv::Point> nodePoints;
+createNodeGrid(roiPyramid[level].mask, nodePoints);
+
+// Number of nodes and degrees of freedom
+int numNodes = static_cast<int>(nodePoints.size());
+int numDOFs = numNodes * 2;  // 2 DOFs per node (u and v)
+
+std::cout << "  Total nodes at this level: " << numNodes << ", Total DOFs: " << numDOFs << std::endl;
+
+// Initialize node displacements from previous result
+cv::Mat nodeDisplacements = cv::Mat::zeros(numDOFs, 1, CV_64F);
+
+// Initialize node displacements from upscaled result
+for (int i = 0; i < numNodes; i++) {
+cv::Point node = nodePoints[i];
+if (node.y < initResult.u.rows && node.x < initResult.u.cols && 
+initResult.validMask.at<uchar>(node.y, node.x) > 0) {
+// Get displacement at node from previous level
+nodeDisplacements.at<double>(i * 2) = initResult.u.at<double>(node.y, node.x);
+nodeDisplacements.at<double>(i * 2 + 1) = initResult.v.at<double>(node.y, node.x);
+}
+}
+
+// Process current level with initial guess from previous level
+// Iterative solution
+double prevResidual = std::numeric_limits<double>::max();
+int iter = 0;
+double residualNorm = 0.0;
+
+for (iter = 0; iter < m_params.maxIterations; iter++) {
+// Build global system matrix and vector
+cv::Mat systemMatrix = cv::Mat::zeros(numDOFs, numDOFs, CV_64F);
+cv::Mat systemVector = cv::Mat::zeros(numDOFs, 1, CV_64F);
+
+buildGlobalSystem(refPyramid[level].img, defPyramid[level].img, 
+nodePoints, systemMatrix, systemVector, nodeDisplacements);
+
+// Add regularization
+addRegularization(nodePoints, systemMatrix);
+
+// Solve the system
+cv::Mat deltaDisplacements;
+bool solveSuccess = solveSystem(systemMatrix, systemVector, deltaDisplacements, residualNorm);
+
+if (!solveSuccess) {
+std::cout << "Warning: Failed to solve the system at level " << level 
+<< ", iteration " << iter << std::endl;
+break;
+}
+
+// Update displacement field
+nodeDisplacements += deltaDisplacements;
+
+// Check convergence
+std::cout << "  Level " << level << ", Iteration " << iter 
+<< ", Residual: " << residualNorm << std::endl;
+
+if (residualNorm < m_params.convergenceThreshold || 
+std::abs(residualNorm - prevResidual) < m_params.convergenceThreshold / 10) {
+std::cout << "  Convergence achieved at level " << level 
+<< " after " << iter << " iterations." << std::endl;
+break;
+}
+
+prevResidual = residualNorm;
+}
+
+// Generate full displacement field from nodal displacements
+Result levelResult(refPyramid[level].img.size());
+levelResult.validMask = roiPyramid[level].mask.clone();
+generateDisplacementField(nodePoints, nodeDisplacements, levelResult, roiPyramid[level].mask);
+
+// Update result
+result.u = levelResult.u;
+result.v = levelResult.v;
+result.validMask = levelResult.validMask;
+result.iterations = iter;
+
+// Calculate confidence metrics and calculate correlation coefficient
+calculateConfidence(result, refPyramid[level].img, defPyramid[level].img);
+double cc = calculateCorrelation(refPyramid[level].img, defPyramid[level].img, 
+      nodePoints, nodeDisplacements);
+result.cc = levelResult.cc;
+} 
+else {
+// Process the coarsest level from scratch
+Result levelResult = compute(refPyramid[level].img, defPyramid[level].img, roiPyramid[level].mask);
+
+// Update result
+result.u = levelResult.u;
+result.v = levelResult.v;
+result.validMask = levelResult.validMask;
+result.cc = levelResult.cc;
+result.confidence = levelResult.confidence;
+result.meanResidual = levelResult.meanResidual;
+result.iterations = levelResult.iterations;
+}
+}
+
+// Restore original parameters
+m_params = origParams;
+
+// Generate final result at original scale
+cv::Mat finalU, finalV, finalValid;
+cv::resize(result.u, finalU, roi.size(), 0, 0, cv::INTER_LINEAR);
+cv::resize(result.v, finalV, roi.size(), 0, 0, cv::INTER_LINEAR);
+cv::resize(result.validMask, finalValid, roi.size(), 0, 0, cv::INTER_NEAREST);
+
+// Scale displacement values to match the original image scale
+finalU /= refPyramid[refPyramid.size()-1].scale;
+finalV /= refPyramid[refPyramid.size()-1].scale;
+
+// Initialize final result
+Result finalResult(roi.size());
+finalResult.u = finalU;
+finalResult.v = finalV;
+finalResult.validMask = finalValid;
+finalResult.iterations = result.iterations;
+
+// Calculate final confidence metrics
+calculateConfidence(finalResult, refImage, defImage);
+
+// Calculate strain fields
+calculateStrains(finalResult);
+
+return finalResult;
+}
 
 void GlobalDIC::calculateConfidence(Result& result, 
-    const cv::Mat& refImage, 
-    const cv::Mat& defImage) {
+const cv::Mat& refImage, 
+const cv::Mat& defImage) {
 // Initialize confidence matrix
 result.confidence = cv::Mat::zeros(result.u.size(), CV_64F);
 
@@ -1226,9 +1340,9 @@ cv::GaussianBlur(result.confidence, result.confidence, cv::Size(5, 5), 0);
 }
 
 double GlobalDIC::calculateResidual(const cv::Mat& refImage, 
-    const cv::Mat& defImage,
-    const std::vector<cv::Point>& nodePoints,
-    const cv::Mat& nodeDisplacements) {
+const cv::Mat& defImage,
+const std::vector<cv::Point>& nodePoints,
+const cv::Mat& nodeDisplacements) {
 // Convert images to floating point if needed
 cv::Mat refFloat, defFloat;
 if (refImage.type() != CV_64F) {
@@ -1283,10 +1397,10 @@ return (count > 0) ? std::sqrt(totalResidual / count) : std::numeric_limits<doub
 }
 
 void GlobalDIC::computeShapeFunctions(const cv::Point& point, 
-      const std::vector<cv::Point>& elementNodes,
-      std::vector<double>& N,
-      std::vector<double>& dNdx,
-      std::vector<double>& dNdy) {
+const std::vector<cv::Point>& elementNodes,
+std::vector<double>& N,
+std::vector<double>& dNdx,
+std::vector<double>& dNdy) {
 // Compute a unique hash for this calculation to use in the cache
 size_t hash = point.y * 1000000 + point.x;
 for (const auto& node : elementNodes) {
@@ -1380,8 +1494,8 @@ m_shapeFunctionCache[hash] = std::make_tuple(N, dNdx, dNdy);
 }
 
 cv::Mat GlobalDIC::createEnhancedVisualization(const cv::Mat& data, const cv::Mat& validMask, 
-               double minVal, double maxVal, 
-               const std::string& title, bool addIsolines) {
+double minVal, double maxVal, 
+const std::string& title, bool addIsolines) {
 // Create a normalized version for color mapping
 cv::Mat dataNorm;
 cv::normalize(data, dataNorm, 0, 255, cv::NORM_MINMAX, CV_8U, validMask);

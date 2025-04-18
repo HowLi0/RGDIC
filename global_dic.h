@@ -40,6 +40,15 @@ public:
         Result(const cv::Size& size);
     };
     
+    // Layer structure for pyramid approach (OpenCorr-inspired)
+    struct Layer {
+        cv::Mat img;         // Image at this pyramid level
+        cv::Mat mask;        // Mask at this pyramid level
+        int octave;          // Current octave
+        double scale;        // Scale factor relative to original image
+        double sigma;        // Gaussian blur sigma for this layer
+    };
+    
     // Parameters structure to centralize all parameters
     struct Parameters {
         int nodeSpacing;              // Spacing between nodes in pixels
@@ -53,7 +62,7 @@ public:
         int numScaleLevels;           // Number of scale levels
         double scaleFactor;           // Scale factor between levels
         bool useParallel;             // Use parallelization
-        cv::Size minImageSize;        // 最小允许的图像尺寸
+        cv::Size minImageSize;        // Minimum allowed image size
         
         // Constructor with default values
         Parameters();
@@ -128,10 +137,15 @@ private:
                                   Result& result,
                                   const cv::Mat& roi);
                                   
-    // Multi-scale implementation
+    // Multi-scale implementation with OpenCorr-inspired pyramid approach
     Result computeMultiScale(const cv::Mat& refImage, 
                            const cv::Mat& defImage,
                            const cv::Mat& roi);
+    
+    // Create image pyramid for multi-scale approach (OpenCorr-inspired)
+    void createImagePyramid(const cv::Mat& image, 
+                           const cv::Mat& mask,
+                           std::vector<Layer>& pyramid);
     
     // Compute element shape functions and derivatives
     void computeShapeFunctions(const cv::Point& point, 
