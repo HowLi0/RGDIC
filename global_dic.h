@@ -61,7 +61,7 @@ public:
     };
     
     // FFTW包装器，用于快速傅里叶变换
-    class FFTW {
+class FFTW {
     public:
         int subset_width, subset_height;
         int subset_size;
@@ -77,47 +77,137 @@ public:
         fftwf_plan tar_plan;
         fftwf_plan zncc_plan;
         
+        // Initialization flag
+        bool is_initialized;
+        
+        // Default constructor
+        FFTW() : subset_width(0), subset_height(0), subset_size(0),
+                 ref_subset(nullptr), tar_subset(nullptr), 
+                 ref_freq(nullptr), tar_freq(nullptr), zncc_freq(nullptr), zncc(nullptr),
+                 ref_plan(nullptr), tar_plan(nullptr), zncc_plan(nullptr),
+                 is_initialized(false) {}
+        
         static std::unique_ptr<FFTW> allocate(int radius_x, int radius_y) {
+            // Ensure dimensions are valid
+            if (radius_x <= 0 || radius_y <= 0) {
+                std::cerr << "错误: FFTW计划的无效维度: " << radius_x << "x" << radius_y << std::endl;
+                return nullptr;
+            }
+            
             auto instance = std::make_unique<FFTW>();
             
             instance->subset_width = radius_x * 2;
             instance->subset_height = radius_y * 2;
             instance->subset_size = instance->subset_width * instance->subset_height;
             
-            // 分配内存
-            instance->ref_subset = (float*)fftwf_malloc(sizeof(float) * instance->subset_size);
-            instance->tar_subset = (float*)fftwf_malloc(sizeof(float) * instance->subset_size);
-            instance->zncc = (float*)fftwf_malloc(sizeof(float) * instance->subset_size);
-            
-            // 分配频域内存 (复数)
-            instance->ref_freq = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * (instance->subset_height * (instance->subset_width / 2 + 1)));
-            instance->tar_freq = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * (instance->subset_height * (instance->subset_width / 2 + 1)));
-            instance->zncc_freq = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * (instance->subset_height * (instance->subset_width / 2 + 1)));
-            
-            // 创建FFTW计划
-            instance->ref_plan = fftwf_plan_dft_r2c_2d(instance->subset_height, instance->subset_width, 
-                                                     instance->ref_subset, instance->ref_freq, FFTW_MEASURE);
-            instance->tar_plan = fftwf_plan_dft_r2c_2d(instance->subset_height, instance->subset_width, 
-                                                     instance->tar_subset, instance->tar_freq, FFTW_MEASURE);
-            instance->zncc_plan = fftwf_plan_dft_c2r_2d(instance->subset_height, instance->subset_width, 
-                                                       instance->zncc_freq, instance->zncc, FFTW_MEASURE);
-            
-            return instance;
+            // 分配内存时进行错误检查
+            try {
+                // 分配内存
+                instance->ref_subset = (float*)fftwf_malloc(sizeof(float) * instance->subset_size);
+                if (!instance->ref_subset) throw std::bad_alloc();
+                
+                instance->tar_subset = (float*)fftwf_malloc(sizeof(float) * instance->subset_size);
+                if (!instance->tar_subset) throw std::bad_alloc();
+                
+                instance->zncc = (float*)fftwf_malloc(sizeof(float) * instance->subset_size);
+                if (!instance->zncc) throw std::bad_alloc();
+                
+                // 分配频域内存 (复数)
+                size_t freq_size = instance->subset_height * (instance->subset_width / 2 + 1);
+                
+                instance->ref_freq = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * freq_size);
+                if (!instance->ref_freq) throw std::bad_alloc();
+                
+                instance->tar_freq = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * freq_size);
+                if (!instance->tar_freq) throw std::bad_alloc();
+                
+                instance->zncc_freq = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * freq_size);
+                if (!instance->zncc_freq) throw std::bad_alloc();
+                
+                // 初始化内存为零以避免未初始化的内存访问
+                std::memset(instance->ref_subset, 0, sizeof(float) * instance->subset_size);
+                std::memset(instance->tar_subset, 0, sizeof(float) * instance->subset_size);
+                std::memset(instance->zncc, 0, sizeof(float) * instance->subset_size);
+                std::memset(instance->ref_freq, 0, sizeof(fftwf_complex) * freq_size);
+                std::memset(instance->tar_freq, 0, sizeof(fftwf_complex) * freq_size);
+                std::memset(instance->zncc_freq, 0, sizeof(fftwf_complex) * freq_size);
+                
+                // 使用静态互斥锁保护FFTW计划创建
+                static std::mutex fftw_mutex;
+                {
+                    std::lock_guard<std::mutex> lock(fftw_mutex);
+                    
+                    // 创建FFTW计划
+                    instance->ref_plan = fftwf_plan_dft_r2c_2d(
+                        instance->subset_height, instance->subset_width, 
+                        instance->ref_subset, instance->ref_freq, 
+                        FFTW_ESTIMATE); // 使用ESTIMATE，而不是MEASURE，更安全
+                    
+                    if (!instance->ref_plan) throw std::runtime_error("Failed to create ref_plan");
+                    
+                    instance->tar_plan = fftwf_plan_dft_r2c_2d(
+                        instance->subset_height, instance->subset_width, 
+                        instance->tar_subset, instance->tar_freq, 
+                        FFTW_ESTIMATE);
+                    
+                    if (!instance->tar_plan) throw std::runtime_error("Failed to create tar_plan");
+                    
+                    instance->zncc_plan = fftwf_plan_dft_c2r_2d(
+                        instance->subset_height, instance->subset_width, 
+                        instance->zncc_freq, instance->zncc, 
+                        FFTW_ESTIMATE);
+                    
+                    if (!instance->zncc_plan) throw std::runtime_error("Failed to create zncc_plan");
+                }
+                
+                instance->is_initialized = true;
+                return instance;
+                
+            } catch (const std::exception& e) {
+                std::cerr << "FFTW初始化错误: " << e.what() << std::endl;
+                // 清理任何已分配的资源
+                if (instance->ref_subset) fftwf_free(instance->ref_subset);
+                if (instance->tar_subset) fftwf_free(instance->tar_subset);
+                if (instance->zncc) fftwf_free(instance->zncc);
+                if (instance->ref_freq) fftwf_free(instance->ref_freq);
+                if (instance->tar_freq) fftwf_free(instance->tar_freq);
+                if (instance->zncc_freq) fftwf_free(instance->zncc_freq);
+                if (instance->ref_plan) fftwf_destroy_plan(instance->ref_plan);
+                if (instance->tar_plan) fftwf_destroy_plan(instance->tar_plan);
+                if (instance->zncc_plan) fftwf_destroy_plan(instance->zncc_plan);
+                
+                return nullptr;
+            }
         }
         
         static void release(std::unique_ptr<FFTW>& instance) {
-            // 销毁FFTW计划
-            fftwf_destroy_plan(instance->ref_plan);
-            fftwf_destroy_plan(instance->tar_plan);
-            fftwf_destroy_plan(instance->zncc_plan);
-            
-            // 释放内存
-            fftwf_free(instance->ref_subset);
-            fftwf_free(instance->tar_subset);
-            fftwf_free(instance->zncc);
-            fftwf_free(instance->ref_freq);
-            fftwf_free(instance->tar_freq);
-            fftwf_free(instance->zncc_freq);
+            if (instance) {
+                // 销毁FFTW计划
+                if (instance->ref_plan) fftwf_destroy_plan(instance->ref_plan);
+                if (instance->tar_plan) fftwf_destroy_plan(instance->tar_plan);
+                if (instance->zncc_plan) fftwf_destroy_plan(instance->zncc_plan);
+                
+                // 释放内存
+                if (instance->ref_subset) fftwf_free(instance->ref_subset);
+                if (instance->tar_subset) fftwf_free(instance->tar_subset);
+                if (instance->zncc) fftwf_free(instance->zncc);
+                if (instance->ref_freq) fftwf_free(instance->ref_freq);
+                if (instance->tar_freq) fftwf_free(instance->tar_freq);
+                if (instance->zncc_freq) fftwf_free(instance->zncc_freq);
+                
+                // 重置指针为nullptr以避免悬空指针
+                instance->ref_plan = nullptr;
+                instance->tar_plan = nullptr;
+                instance->zncc_plan = nullptr;
+                instance->ref_subset = nullptr;
+                instance->tar_subset = nullptr;
+                instance->zncc = nullptr;
+                instance->ref_freq = nullptr;
+                instance->tar_freq = nullptr;
+                instance->zncc_freq = nullptr;
+                
+                instance->is_initialized = false;
+            }
         }
     };
     

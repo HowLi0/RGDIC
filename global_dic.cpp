@@ -46,150 +46,181 @@ PyramidGlobalDIC::Parameters::Parameters()
 
 PyramidGlobalDIC::PyramidGlobalDIC(const Parameters& params)
 : m_params(params), m_gradientsComputed(false) {
-      
-      // 设置OpenMP线程数
-      if (m_params.useParallel) {
-          omp_set_num_threads(m_params.numThreads);
-          std::cout << "Using " << m_params.numThreads << " threads for parallel computation." << std::endl;
-      }
-      
-      // 初始化图像插值缓存
-      if (m_params.useCaching) {
-          m_interpolationCache.clear();
-          m_gradientCache.clear();
-      }
-      
-        // 初始化FFTW实例池
-        if (m_params.useParallel) {
-            m_fftwPool.resize(m_params.numThreads);
-        } else {
-            m_fftwPool.resize(1); // 单线程模式下只需要一个实例
+    // 初始化FFTW线程
+    fftwf_init_threads();
+    fftwf_plan_with_nthreads(params.numThreads);
+    
+    // 设置OpenMP线程数
+    if (m_params.useParallel) {
+        omp_set_num_threads(m_params.numThreads);
+        std::cout << "Using " << m_params.numThreads << " threads for parallel computation." << std::endl;
+    }
+    
+    // 初始化图像插值缓存
+    if (m_params.useCaching) {
+        m_interpolationCache.clear();
+        m_gradientCache.clear();
+    }
+    
+    // 初始化FFTW实例池
+    if (m_params.useParallel) {
+        m_fftwPool.resize(m_params.numThreads);
+    } else {
+        m_fftwPool.resize(1); // 单线程模式下只需要一个实例
+    }
+    
+    // 串行初始化FFTW实例池以避免并发问题
+    for (int i = 0; i < static_cast<int>(m_fftwPool.size()); i++) {
+        m_fftwPool[i] = FFTW::allocate(m_params.subsetRadius, m_params.subsetRadius);
+        if (!m_fftwPool[i]) {
+            std::cerr << "警告: 无法创建线程 " << i << " 的FFTW实例。将在需要时重试。" << std::endl;
         }
-      
-      // 使用并行化初始化FFTW实例池
-      #pragma omp parallel for if(m_params.useParallel)
-      for (int i = 0; i < m_params.numThreads; i++) {
-          m_fftwPool[i] = FFTW::allocate(m_params.subsetRadius, m_params.subsetRadius);
-      }
+    }
 }
 
 PyramidGlobalDIC::~PyramidGlobalDIC() {
     // 清理FFTW实例池
     for (auto& instance : m_fftwPool) {
-        FFTW::release(instance);
+        if (instance) {
+            FFTW::release(instance);
+        }
     }
+    m_fftwPool.clear();
+    
+    // 释放FFTW线程资源
+    fftwf_cleanup_threads();
 }
 
-// 使用FFTCC计算单点的初始位移
 bool PyramidGlobalDIC::computeFFTCCDisplacement(const cv::Mat& refImage,
     const cv::Mat& defImage,
     const cv::Point& point,
     double& u, double& v,
     double& zncc) {
-        // 获取当前线程的FFTW实例
-        std::unique_ptr<FFTW>& fftw = getFFTWInstance(omp_get_thread_num());
-
-        int subset_width = fftw->subset_width;
-        int subset_height = fftw->subset_height;
-        int subset_radius_x = subset_width / 2;
-        int subset_radius_y = subset_height / 2;
-        int subset_size = subset_width * subset_height;
-
-        // 检查点是否在有效边界内
-        if (point.x - subset_radius_x < 0 || point.x + subset_radius_x >= refImage.cols ||
+    // 获取当前线程的FFTW实例
+    std::unique_ptr<FFTW>& fftw = getFFTWInstance(omp_get_thread_num());
+    
+    // Check if the FFTW instance is valid and initialized
+    if (!fftw || !fftw->is_initialized) {
+        std::cerr << "错误: FFTW实例无效或未初始化" << std::endl;
+        return false;
+    }
+    
+    int subset_width = fftw->subset_width;
+    int subset_height = fftw->subset_height;
+    int subset_radius_x = subset_width / 2;
+    int subset_radius_y = subset_height / 2;
+    int subset_size = subset_width * subset_height;
+    
+    // 检查点是否在有效边界内
+    if (point.x - subset_radius_x < 0 || point.x + subset_radius_x >= refImage.cols ||
         point.y - subset_radius_y < 0 || point.y + subset_radius_y >= refImage.rows) {
         return false;
-        }
-
-        // 计算搜索范围 - 确保搜索区域不超出图像边界
-        int search_radius_x = std::min(m_params.fftCCSearchRadius, 
-        std::min(point.x, defImage.cols - point.x - 1));
-        int search_radius_y = std::min(m_params.fftCCSearchRadius, 
-        std::min(point.y, defImage.rows - point.y - 1));
-
-        if (search_radius_x <= 0 || search_radius_y <= 0) {
+    }
+    
+    // 计算搜索范围 - 确保搜索区域不超出图像边界
+    int search_radius_x = std::min(m_params.fftCCSearchRadius, 
+                                  std::min(point.x, defImage.cols - point.x - 1));
+    int search_radius_y = std::min(m_params.fftCCSearchRadius, 
+                                  std::min(point.y, defImage.rows - point.y - 1));
+    
+    if (search_radius_x <= 0 || search_radius_y <= 0) {
         return false;
-        }
-
+    }
+    
+    try {
         // 提取参考子集
         float ref_mean = 0.0f;
         for (int y = -subset_radius_y; y < subset_radius_y; y++) {
-        for (int x = -subset_radius_x; x < subset_radius_x; x++) {
-        int idx = (y + subset_radius_y) * subset_width + (x + subset_radius_x);
-        float value = refImage.at<double>(point.y + y, point.x + x);
-        fftw->ref_subset[idx] = value;
-        ref_mean += value;
-        }
+            for (int x = -subset_radius_x; x < subset_radius_x; x++) {
+                int idx = (y + subset_radius_y) * subset_width + (x + subset_radius_x);
+                if (idx < 0 || idx >= subset_size) continue; // 安全检查
+                
+                float value = static_cast<float>(refImage.at<double>(point.y + y, point.x + x));
+                fftw->ref_subset[idx] = value;
+                ref_mean += value;
+            }
         }
         ref_mean /= subset_size;
-
+        
         // 提取目标子集
         float tar_mean = 0.0f;
         for (int y = -subset_radius_y; y < subset_radius_y; y++) {
-        for (int x = -subset_radius_x; x < subset_radius_x; x++) {
-        int idx = (y + subset_radius_y) * subset_width + (x + subset_radius_x);
-        float value = defImage.at<double>(point.y + y, point.x + x);
-        fftw->tar_subset[idx] = value;
-        tar_mean += value;
-        }
+            for (int x = -subset_radius_x; x < subset_radius_x; x++) {
+                int idx = (y + subset_radius_y) * subset_width + (x + subset_radius_x);
+                if (idx < 0 || idx >= subset_size) continue; // 安全检查
+                
+                float value = static_cast<float>(defImage.at<double>(point.y + y, point.x + x));
+                fftw->tar_subset[idx] = value;
+                tar_mean += value;
+            }
         }
         tar_mean /= subset_size;
-
+        
         // 计算零均值子集和标准差
         float ref_norm = 0.0f;
         float tar_norm = 0.0f;
-
+        
         for (int i = 0; i < subset_size; i++) {
-        fftw->ref_subset[i] -= ref_mean;
-        fftw->tar_subset[i] -= tar_mean;
-        ref_norm += fftw->ref_subset[i] * fftw->ref_subset[i];
-        tar_norm += fftw->tar_subset[i] * fftw->tar_subset[i];
+            fftw->ref_subset[i] -= ref_mean;
+            fftw->tar_subset[i] -= tar_mean;
+            ref_norm += fftw->ref_subset[i] * fftw->ref_subset[i];
+            tar_norm += fftw->tar_subset[i] * fftw->tar_subset[i];
         }
-
-        // 执行FFT
+        
+        // 检查标准差为零的情况（避免除零）
+        if (ref_norm < 1e-10 || tar_norm < 1e-10) {
+            return false;
+        }
+        
+        // 执行FFT - 添加错误检查
         fftwf_execute(fftw->ref_plan);
         fftwf_execute(fftw->tar_plan);
-
+        
         // 计算频域互相关
-        for (int n = 0; n < subset_height * (subset_width / 2 + 1); n++) {
-        fftw->zncc_freq[n][0] = (fftw->ref_freq[n][0] * fftw->tar_freq[n][0]) + 
-        (fftw->ref_freq[n][1] * fftw->tar_freq[n][1]);
-        fftw->zncc_freq[n][1] = (fftw->ref_freq[n][0] * fftw->tar_freq[n][1]) - 
-        (fftw->ref_freq[n][1] * fftw->tar_freq[n][0]);
+        int freq_size = fftw->subset_height * (fftw->subset_width / 2 + 1);
+        for (int n = 0; n < freq_size; n++) {
+            fftw->zncc_freq[n][0] = (fftw->ref_freq[n][0] * fftw->tar_freq[n][0]) + 
+                                   (fftw->ref_freq[n][1] * fftw->tar_freq[n][1]);
+            fftw->zncc_freq[n][1] = (fftw->ref_freq[n][0] * fftw->tar_freq[n][1]) - 
+                                   (fftw->ref_freq[n][1] * fftw->tar_freq[n][0]);
         }
-
+        
         // 执行逆FFT获取空域互相关
         fftwf_execute(fftw->zncc_plan);
-
+        
         // 寻找最大互相关
         float max_zncc = -std::numeric_limits<float>::max();
         int max_idx = 0;
-
+        
         for (int i = 0; i < subset_size; i++) {
-        if (fftw->zncc[i] > max_zncc) {
-        max_zncc = fftw->zncc[i];
-        max_idx = i;
+            if (fftw->zncc[i] > max_zncc) {
+                max_zncc = fftw->zncc[i];
+                max_idx = i;
+            }
         }
-        }
-
+        
         // 计算位移
         int disp_x = max_idx % subset_width;
         int disp_y = max_idx / subset_width;
-
+        
         // 将位移转换为相对于子集中心的位移
         if (disp_x > subset_radius_x) {
-        disp_x -= subset_width;
+            disp_x -= subset_width;
         }
         if (disp_y > subset_radius_y) {
-        disp_y -= subset_height;
+            disp_y -= subset_height;
         }
-
+        
         // 设置位移和ZNCC
         u = disp_x;
         v = disp_y;
         zncc = max_zncc / (sqrt(ref_norm * tar_norm) * subset_size);
-
+        
         return true;
+    } catch (const std::exception& e) {
+        std::cerr << "FFTCC计算异常: " << e.what() << std::endl;
+        return false;
+    }
 }
 
 // 使用FFTCC计算初始位移场
@@ -1885,13 +1916,50 @@ return (validPixelCount > 0) ? std::sqrt(totalResidual / validPixelCount) : 0.0;
 
 std::unique_ptr<PyramidGlobalDIC::FFTW> &PyramidGlobalDIC::getFFTWInstance(int threadId)
 {
-        // 确保线程ID在有效范围内
-        threadId = std::max(0, std::min(threadId, static_cast<int>(m_fftwPool.size()) - 1));
+    // 确保线程ID在有效范围内
+    threadId = std::max(0, std::min(threadId, static_cast<int>(m_fftwPool.size()) - 1));
     
-        // 如果该线程ID对应的FFTW实例还未创建，则创建它
-        if (!m_fftwPool[threadId]) {
-            m_fftwPool[threadId] = FFTW::allocate(m_params.subsetRadius, m_params.subsetRadius);
-        }
+    // 如果该线程ID对应的FFTW实例还未创建，则创建它
+    if (!m_fftwPool[threadId] || !m_fftwPool[threadId]->is_initialized) {
+        // 使用互斥锁确保线程安全
+        static std::mutex fftw_mutex;
+        std::lock_guard<std::mutex> lock(fftw_mutex);
         
-        return m_fftwPool[threadId];
+        // 双重检查锁定模式，避免其他线程可能已经创建了该实例
+        if (!m_fftwPool[threadId] || !m_fftwPool[threadId]->is_initialized) {
+            // 创建新实例
+            auto instance = FFTW::allocate(m_params.subsetRadius, m_params.subsetRadius);
+            
+            // 检查实例是否创建成功
+            if (!instance) {
+                std::cerr << "错误: 无法为线程 " << threadId 
+                          << " 创建FFTW实例. 子集大小: " 
+                          << m_params.subsetRadius * 2 << "x" 
+                          << m_params.subsetRadius * 2 << std::endl;
+                
+                // 创建一个应急实例，尝试使用较小的子集大小
+                int reducedRadius = std::max(4, m_params.subsetRadius / 2);
+                std::cout << "尝试使用较小的子集大小: " 
+                          << reducedRadius * 2 << "x" 
+                          << reducedRadius * 2 << std::endl;
+                
+                instance = FFTW::allocate(reducedRadius, reducedRadius);
+                
+                // 如果还是失败，使用最小可能的尺寸
+                if (!instance) {
+                    std::cerr << "错误: 备用FFTW实例创建也失败了." << std::endl;
+                    // 创建一个空实例，后续的使用会检查is_initialized标志
+                    instance = std::make_unique<FFTW>();
+                }
+            }
+            
+            // 替换可能存在的旧实例
+            if (m_fftwPool[threadId]) {
+                FFTW::release(m_fftwPool[threadId]);
+            }
+            m_fftwPool[threadId] = std::move(instance);
+        }
+    }
+    
+    return m_fftwPool[threadId];
 }
