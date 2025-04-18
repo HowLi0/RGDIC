@@ -4,6 +4,7 @@
             "name": "Win32",
             "includePath": [
                 "${workspaceFolder}/**",
+                "E:/code_C++/RGDIC/Eigen3",
                 "D:/Opencv-4.1.0.0/OpenCV-MinGW-Build-OpenCV-4.1.0-x64/include"
             ],
             "defines": [
