@@ -4,16 +4,20 @@
             "name": "Win32",
             "includePath": [
                 "${workspaceFolder}/**",
-                "E:/code_C++/RGDIC/Eigen3",
-                "D:/Opencv-4.1.0.0/OpenCV-MinGW-Build-OpenCV-4.1.0-x64/include"
+                "${workspaceFolder}/Eigen3",
+                "${workspaceFolder}/fftw3/include",
+                "D:/Opencv-4.1.0.0/OpenCV-MinGW-Build-OpenCV-4.1.0-x64/include",
+                "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.8/include",
+                "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.8/include/crt",
+                "D:/Opencv-4.1.0.0/mingw64/include"
             ],
             "defines": [
                 "_DEBUG",
                 "UNICODE",
                 "_UNICODE"
             ],
-            "compilerPath": "D:\\QT\\QTcreator\\Tools\\mingw1310_64\\bin\\g++.exe",
-            "intelliSenseMode": "windows-gcc-x64",
+            "compilerPath": "D:/Opencv-4.1.0.0/mingw64/bin/g++.exe",
+            "intelliSenseMode": "gcc-x64",
             "cStandard": "c17",
             "cppStandard": "c++17"
         }

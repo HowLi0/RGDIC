@@ -1,54 +1,155 @@
 {
     "tasks": [
         {
-            "type": "cppbuild",
-            "label": "C/C++: g++.exe 生成活动文件",
-            "command": "D:/QT/QTcreator/Tools/mingw1310_64/bin/g++.exe",
+            "type": "shell",
+            "label": "设置MSVC环境",
+            "command": "cmd",
             "args": [
-                "-fdiagnostics-color=always",
-                "-fopenmp",
-                "-g",
-                "${file}",
-                "${workspaceFolder}/rgdic.cpp",
-                "${workspaceFolder}/global_dic.cpp",
-                "-I", "${workspaceFolder}/Eigen3", 
-                "-I", "${workspaceFolder}/fftw3/include", 
-                "-L", "${workspaceFolder}/fftw3/lib",
-                "-I", "D:/Opencv-4.1.0.0/OpenCV-MinGW-Build-OpenCV-4.1.0-x64/include",  // 包含路径   头文件   编译的时候到这个路径下找头文件  编译审生成可重定位文件
-				"-L", "D:/Opencv-4.1.0.0/OpenCV-MinGW-Build-OpenCV-4.1.0-x64/x64/mingw/bin", // 库路径   动态链接库地址，可执行文件运行起来需要这些库提供的机器码
-				// "-l","libopencv_world4100",          // 链接需要使用这些dll作为可重定位文件
-                "-l","libfftw3-3",
-                "-l","libfftw3f-3",
-                "-l","libfftw3l-3",
-				"-l","libopencv_calib3d410",
-				"-l","libopencv_core410",
-				"-l","libopencv_dnn410",
-				"-l","libopencv_features2d410",
-				"-l","libopencv_flann410",
-				"-l","libopencv_gapi410",
-				"-l","libopencv_highgui410",
-				"-l","libopencv_imgcodecs410",
-				"-l","libopencv_imgproc410",
-				"-l","libopencv_ml410",
-				"-l","libopencv_photo410",
-                "-l","libopencv_stitching410",
-                "-l","libopencv_video410",
-				"-l","libopencv_videoio410",
-				"-l","libopencv_objdetect410",
-                "-o",
-                "${fileDirname}/${fileBasenameNoExtension}.exe"
+                "/c",
+                "\"D:\\Visual Studio\\VS  IDE\\VC\\Auxiliary\\Build\\vcvars64.bat\" && echo MSVC Environment Ready"
             ],
             "options": {
-                "cwd": "D:/QT/QTcreator/Tools/mingw1310_64/bin"
+                "cwd": "${workspaceFolder}"
             },
-            "problemMatcher": [
-                "$gcc"
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "type": "shell",
+            "label": "编译 CUDA kernels (MSVC)",
+            "command": "cmd",
+            "args": [
+                "/c",
+                "\"D:\\Visual Studio\\VS  IDE\\VC\\Auxiliary\\Build\\vcvars64.bat\" && nvcc -c ${workspaceFolder}/cuda_dic_kernels.cu -I ${workspaceFolder}/Eigen3 -I ${workspaceFolder}/opencv/include -I ${workspaceFolder}/fftw3/include --compiler-options \"/MD /O2\" -arch=sm_75 -o ${workspaceFolder}/cuda_dic_kernels.obj"
             ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": ["$nvcc"]
+        },
+        {
+            "type": "shell",
+            "label": "编译 CUDA C++ 源文件 (MSVC)",
+            "command": "cmd",
+            "args": [
+                "/c",
+                "\"D:\\Visual Studio\\VS  IDE\\VC\\Auxiliary\\Build\\vcvars64.bat\" && cl /c /MD /O2 /EHsc /DUSE_CUDA /I${workspaceFolder}/Eigen3 /I${workspaceFolder}/fftw3/include /I${workspaceFolder}/opencv/include /I\"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.8/include\" ${workspaceFolder}/cuda_rgdic.cpp ${workspaceFolder}/cuda_dic_kernel.cpp"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": "build",
+            "dependsOn": "编译 CUDA kernels (MSVC)"
+        },
+        {
+            "type": "shell",
+            "label": "编译 CPU 源文件 (MSVC)",
+            "command": "cmd",
+            "args": [
+                "/c",
+                "\"D:\\Visual Studio\\VS  IDE\\VC\\Auxiliary\\Build\\vcvars64.bat\" && cl /c /MD /O2 /EHsc /DUSE_CUDA /I${workspaceFolder}/Eigen3 /I${workspaceFolder}/fftw3/include /I${workspaceFolder}/opencv/include /I\"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.8/include\" ${workspaceFolder}/rgdic.cpp ${workspaceFolder}/icgn_optimizer.cpp ${workspaceFolder}/neighbor_utils.cpp"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": "build",
+            "dependsOn": "编译 CUDA C++ 源文件 (MSVC)"
+        },
+        {
+            "type": "shell",
+            "label": "编译主程序 (MSVC)",
+            "command": "cmd",
+            "args": [
+                "/c",
+                "\"D:\\Visual Studio\\VS  IDE\\VC\\Auxiliary\\Build\\vcvars64.bat\" && cl /c /MD /O2 /EHsc /DUSE_CUDA /I${workspaceFolder}/Eigen3 /I${workspaceFolder}/fftw3/include /I${workspaceFolder}/opencv/include /I\"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.8/include\" ${file}"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": "build",
+            "dependsOn": "编译 CPU 源文件 (MSVC)"
+        },
+        {
+            "type": "shell",
+            "label": "链接 CUDA 程序 (MSVC)",
+            "command": "cmd",
+            "args": [
+                "/c",
+                "\"D:\\Visual Studio\\VS  IDE\\VC\\Auxiliary\\Build\\vcvars64.bat\" && link /OUT:${fileBasenameNoExtension}_cuda.exe ${fileBasenameNoExtension}.obj rgdic.obj icgn_optimizer.obj neighbor_utils.obj cuda_rgdic.obj cuda_dic_kernel.obj cuda_dic_kernels.obj /LIBPATH:${workspaceFolder}/opencv/lib /LIBPATH:${workspaceFolder}/fftw3/lib /LIBPATH:\"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.8/lib/x64\" opencv_world4100.lib libfftw3-3.lib libfftw3f-3.lib libfftw3l-3.lib cudart.lib cublas.lib curand.lib cusolver.lib cusparse.lib /NODEFAULTLIB:LIBCMT"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
             "group": {
                 "kind": "build",
                 "isDefault": true
             },
-            "detail": "调试器生成的任务。"
+            "dependsOn": "编译主程序 (MSVC)",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": ["$msCompile"]
+        },
+        {
+            "type": "shell",
+            "label": "C/C++: 仅CPU版本编译 (MSVC)",
+            "command": "cmd",
+            "args": [
+                "/c",
+                "\"D:\\Visual Studio\\VS  IDE\\VC\\Auxiliary\\Build\\vcvars64.bat\" && cl /MD /O2 /EHsc /I${workspaceFolder}/Eigen3 /I${workspaceFolder}/fftw3/include /I${workspaceFolder}/opencv/include ${file} ${workspaceFolder}/rgdic.cpp ${workspaceFolder}/icgn_optimizer.cpp ${workspaceFolder}/neighbor_utils.cpp /link /OUT:${fileBasenameNoExtension}_cpu.exe /LIBPATH:${workspaceFolder}/opencv/lib /LIBPATH:${workspaceFolder}/fftw3/lib opencv_world4100.lib libfftw3-3.lib libfftw3f-3.lib libfftw3l-3.lib /NODEFAULTLIB:LIBCMT"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": "build",
+            "problemMatcher": ["$msCompile"],
+            "detail": "仅编译CPU版本（不包含CUDA）"
+        },
+        {
+            "type": "shell",
+            "label": "编译 CPU 版本 (main_cpu)",
+            "command": "cmd",
+            "args": [
+                "/c",
+                "\"D:\\Visual Studio\\VS  IDE\\VC\\Auxiliary\\Build\\vcvars64.bat\" && cl /MD /O2 /EHsc /I${workspaceFolder}/Eigen3 /I${workspaceFolder}/fftw3/include /I${workspaceFolder}/opencv/include ${workspaceFolder}/main_cpu.cpp ${workspaceFolder}/common_functions.cpp ${workspaceFolder}/rgdic.cpp ${workspaceFolder}/icgn_optimizer.cpp ${workspaceFolder}/neighbor_utils.cpp /link /OUT:main_cpu.exe /LIBPATH:${workspaceFolder}/opencv/lib /LIBPATH:${workspaceFolder}/fftw3/lib opencv_world4100.lib libfftw3-3.lib libfftw3f-3.lib libfftw3l-3.lib /NODEFAULTLIB:LIBCMT"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": "build",
+            "problemMatcher": ["$msCompile"],
+            "detail": "编译独立的CPU版本main_cpu.cpp"
+        },
+        {
+            "type": "shell",
+            "label": "编译 CUDA 版本 (main_cuda)",
+            "command": "cmd",
+            "args": [
+                "/c",
+                "\"D:\\Visual Studio\\VS  IDE\\VC\\Auxiliary\\Build\\vcvars64.bat\" && nvcc -c ${workspaceFolder}/cuda_dic_kernels.cu -I ${workspaceFolder}/Eigen3 -I ${workspaceFolder}/opencv/include -I ${workspaceFolder}/fftw3/include --compiler-options \"/MD /O2\" -arch=sm_75 -o ${workspaceFolder}/cuda_dic_kernels.obj && cl /c /MD /O2 /EHsc /DUSE_CUDA /I${workspaceFolder}/Eigen3 /I${workspaceFolder}/fftw3/include /I${workspaceFolder}/opencv/include /I\"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.8/include\" ${workspaceFolder}/cuda_rgdic.cpp ${workspaceFolder}/cuda_dic_kernel.cpp ${workspaceFolder}/rgdic.cpp ${workspaceFolder}/icgn_optimizer.cpp ${workspaceFolder}/neighbor_utils.cpp ${workspaceFolder}/common_functions.cpp ${workspaceFolder}/main_cuda.cpp && link /OUT:main_cuda.exe main_cuda.obj common_functions.obj rgdic.obj icgn_optimizer.obj neighbor_utils.obj cuda_rgdic.obj cuda_dic_kernel.obj cuda_dic_kernels.obj /LIBPATH:${workspaceFolder}/opencv/lib /LIBPATH:${workspaceFolder}/fftw3/lib /LIBPATH:\"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.8/lib/x64\" opencv_world4100.lib libfftw3-3.lib libfftw3f-3.lib libfftw3l-3.lib cudart.lib cublas.lib curand.lib cusolver.lib cusparse.lib /NODEFAULTLIB:LIBCMT"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": "build",
+            "problemMatcher": ["$nvcc", "$msCompile"],
+            "detail": "编译独立的CUDA版本main_cuda.cpp"
         }
     ],
     "version": "2.0.0"

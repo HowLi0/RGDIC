@@ -1,0 +1,183 @@
+cmake_minimum_required(VERSION 3.18)
+project(CUDA_RGDIC LANGUAGES CXX CUDA)
+
+# Set C++ standard
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Set CUDA standard
+set(CMAKE_CUDA_STANDARD 17)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+
+# Find required packages
+find_package(OpenCV REQUIRED)
+find_package(CUDA REQUIRED)
+
+# Find Eigen3
+find_package(Eigen3 QUIET)
+if(NOT Eigen3_FOUND)
+    # Use local Eigen3 if not found in system
+    set(EIGEN3_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/Eigen3")
+    if(EXISTS ${EIGEN3_INCLUDE_DIR})
+        message(STATUS "Using local Eigen3 at ${EIGEN3_INCLUDE_DIR}")
+    else()
+        message(FATAL_ERROR "Eigen3 not found. Please install Eigen3 or ensure Eigen3 directory exists.")
+    endif()
+else()
+    message(STATUS "Found Eigen3: ${EIGEN3_INCLUDE_DIR}")
+endif()
+
+# Set CUDA architecture
+set(CMAKE_CUDA_ARCHITECTURES "75;80;86")
+
+# Add compile options
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -g -G")
+else()
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3 --use_fast_math")
+endif()
+
+# Add OpenMP support
+find_package(OpenMP)
+if(OpenMP_CXX_FOUND)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler=${OpenMP_CXX_FLAGS}")
+endif()
+
+# Define source files
+set(CUDA_SOURCES
+    cuda_dic_kernels.cu
+)
+
+set(CPP_SOURCES
+    main.cpp
+    rgdic.cpp
+    icgn_optimizer.cpp
+    neighbor_utils.cpp
+    cuda_rgdic.cpp
+    cuda_dic_kernel.cpp
+)
+
+set(HEADERS
+    rgdic.h
+    icgn_optimizer.h
+    neighbor_utils.h
+    cuda_rgdic.h
+    cuda_dic_kernel.h
+)
+
+# Create executable
+add_executable(${PROJECT_NAME} ${CPP_SOURCES} ${CUDA_SOURCES} ${HEADERS})
+
+# Set target properties
+set_target_properties(${PROJECT_NAME} PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_RESOLVE_DEVICE_SYMBOLS ON
+)
+
+# Include directories
+target_include_directories(${PROJECT_NAME} PRIVATE
+    ${OpenCV_INCLUDE_DIRS}
+    ${CUDA_INCLUDE_DIRS}
+    ${EIGEN3_INCLUDE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+# Link libraries
+target_link_libraries(${PROJECT_NAME}
+    ${OpenCV_LIBS}
+    ${CUDA_LIBRARIES}
+    ${CUDA_CUBLAS_LIBRARIES}
+    ${CUDA_CURAND_LIBRARIES}
+    ${CUDA_cusolver_LIBRARY}
+)
+
+# Add OpenMP if found
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(${PROJECT_NAME} OpenMP::OpenMP_CXX)
+endif()
+
+# Compiler-specific options
+target_compile_options(${PROJECT_NAME} PRIVATE
+    $<$<COMPILE_LANGUAGE:CXX>:
+        -Wall -Wextra -O3
+        $<$<CONFIG:Debug>:-g>
+        $<$<CONFIG:Release>:-DNDEBUG>
+    >
+    $<$<COMPILE_LANGUAGE:CUDA>:
+        --expt-relaxed-constexpr
+        --expt-extended-lambda
+        -Xcompiler=-Wall,-Wextra
+        $<$<CONFIG:Debug>:-g,-G>
+        $<$<CONFIG:Release>:-O3,--use_fast_math,-DNDEBUG>
+    >
+)
+
+# Platform-specific settings
+if(WIN32)
+    # Windows-specific settings
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        WIN32_EXECUTABLE FALSE
+    )
+    
+    # Add Windows-specific libraries if needed
+    # target_link_libraries(${PROJECT_NAME} winmm)
+    
+elseif(UNIX AND NOT APPLE)
+    # Linux-specific settings
+    find_package(Threads REQUIRED)
+    target_link_libraries(${PROJECT_NAME} Threads::Threads)
+    
+    # Add math library
+    target_link_libraries(${PROJECT_NAME} m)
+endif()
+
+# Custom targets
+
+# Clean CUDA cache
+add_custom_target(clean-cuda
+    COMMAND ${CMAKE_COMMAND} -E remove_directory "${CMAKE_BINARY_DIR}/CMakeFiles/${PROJECT_NAME}.dir"
+    COMMENT "Cleaning CUDA cache"
+)
+
+# Test CUDA installation
+add_custom_target(test-cuda
+    COMMAND nvcc --version
+    COMMAND nvidia-smi
+    COMMENT "Testing CUDA installation"
+)
+
+# Performance test
+add_custom_target(performance-test
+    COMMAND ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}
+    DEPENDS ${PROJECT_NAME}
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    COMMENT "Running performance test"
+)
+
+# Installation
+install(TARGETS ${PROJECT_NAME}
+    RUNTIME DESTINATION bin
+)
+
+# Print configuration summary
+message(STATUS "Configuration Summary:")
+message(STATUS "  Build type: ${CMAKE_BUILD_TYPE}")
+message(STATUS "  C++ standard: ${CMAKE_CXX_STANDARD}")
+message(STATUS "  CUDA standard: ${CMAKE_CUDA_STANDARD}")
+message(STATUS "  CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+message(STATUS "  OpenCV version: ${OpenCV_VERSION}")
+message(STATUS "  OpenCV libraries: ${OpenCV_LIBS}")
+message(STATUS "  CUDA version: ${CUDA_VERSION}")
+message(STATUS "  OpenMP found: ${OpenMP_CXX_FOUND}")
+
+# Development help
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    message(STATUS "Debug build enabled. Use 'make VERBOSE=1' for detailed output.")
+endif()
+
+# Add a custom command to create result directory
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_SOURCE_DIR}/result"
+    COMMENT "Creating result directory"
+)

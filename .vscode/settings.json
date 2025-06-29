@@ -64,6 +64,12 @@
         "streambuf": "cpp",
         "thread": "cpp",
         "typeinfo": "cpp",
-        "variant": "cpp"
+        "variant": "cpp",
+        "unordered_set": "cpp",
+        "hash_map": "cpp",
+        "future": "cpp",
+        "cinttypes": "cpp",
+        "valarray": "cpp",
+        "cu": "cpp",
     }
 }

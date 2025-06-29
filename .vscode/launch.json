@@ -7,7 +7,7 @@
             "program": "${fileDirname}/${fileBasenameNoExtension}.exe",
             "args": [],
             "stopAtEntry": false,
-            "cwd": "D:/QT/QTcreator/Tools/mingw1310_64/bin",
+            "cwd": "${workspaceFolder}",
             "environment": [
                 {
                     "name": "PATH",
