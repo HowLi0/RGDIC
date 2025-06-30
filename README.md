@@ -68,7 +68,7 @@ A high-performance Digital Image Correlation (DIC) implementation with CUDA acce
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/RGDIC.git
+git clone https://github.com/HowLi0/RGDIC.git
 cd RGDIC
 
 # Build CUDA version
@@ -296,7 +296,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 👥 Authors
 
-- **Developer** - RGDIC2 Implementation - [GitHub](https://github.com/yourusername)
+- **Developer** - RGDIC Implementation - [GitHub](https://github.com/HowLi0)
 
 ## 🙏 Acknowledgments
 
@@ -308,8 +308,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 📞 Contact
 
 For questions, issues, or collaborations:
-- **Issues**: [GitHub Issues](https://github.com/yourusername/RGDIC2/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/RGDIC2/discussions)
+- **Issues**: [GitHub Issues](https://github.com/HowLi0/RGDIC/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/HowLi0/RGDIC/discussions)
 
 ---
 
