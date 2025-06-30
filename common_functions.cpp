@@ -182,6 +182,80 @@ void exportToCSV(const cv::Mat& u, const cv::Mat& v, const cv::Mat& validMask, c
     std::cout << "Displacement data exported to: " << filename << std::endl;
 }
 
+// Enhanced CSV export with strain fields and full grid output
+void exportToCSVWithStrain(const cv::Mat& u, const cv::Mat& v, const cv::Mat& validMask,
+                          const cv::Mat& exx, const cv::Mat& eyy, const cv::Mat& exy,
+                          const cv::Mat& zncc, const cv::Mat& roi, const std::string& filename) {
+    
+    std::ofstream file(filename);
+    if (!file.is_open()) {
+        std::cerr << "Failed to open file for writing: " << filename << std::endl;
+        return;
+    }
+    
+    // Write header with new format
+    file << "left_x,left_y,right_x,right_y,u,v,exx,eyy,exy,zncc" << std::endl;
+    
+    int totalPoints = 0;
+    int validPoints = 0;
+    
+    // Write only ROI data points (both valid and invalid within ROI)
+    for (int y = 0; y < u.rows; y++) {
+        for (int x = 0; x < u.cols; x++) {
+            // Only process points that are within ROI
+            if (roi.at<uchar>(y, x) > 0) {
+                totalPoints++;
+                
+                // left_x, left_y are the reference coordinates
+                double left_x = static_cast<double>(x);
+                double left_y = static_cast<double>(y);
+                
+                bool isValid = validMask.at<uchar>(y, x) > 0;
+                
+                if (isValid) {
+                    validPoints++;
+                    
+                    // right_x, right_y are the deformed coordinates (left + displacement)
+                    double u_disp = u.at<double>(y, x);
+                    double v_disp = v.at<double>(y, x);
+                    double right_x = left_x + u_disp;
+                    double right_y = left_y + v_disp;
+                    
+                    // Get strain values if available
+                    double strain_exx = (exx.empty()) ? 0.0 : exx.at<double>(y, x);
+                    double strain_eyy = (eyy.empty()) ? 0.0 : eyy.at<double>(y, x);
+                    double strain_exy = (exy.empty()) ? 0.0 : exy.at<double>(y, x);
+                    double correlation = (zncc.empty()) ? 0.0 : zncc.at<double>(y, x);
+                    
+                    // Write valid point data
+                    file << std::fixed << std::setprecision(6)
+                         << left_x << "," << left_y << "," 
+                         << right_x << "," << right_y << ","
+                         << u_disp << "," << v_disp << ","
+                         << strain_exx << "," << strain_eyy << "," << strain_exy << ","
+                         << correlation << std::endl;
+                } else {
+                    // Write invalid point within ROI with zeros
+                    double right_x = left_x;  // No displacement
+                    double right_y = left_y;  // No displacement
+                    
+                    file << std::fixed << std::setprecision(6)
+                         << left_x << "," << left_y << "," 
+                         << right_x << "," << right_y << ","
+                         << "0.0,0.0,0.0,0.0,0.0,0.0" << std::endl;
+                }
+            }
+        }
+    }
+    
+    file.close();
+    
+    std::cout << "Enhanced displacement and strain data exported to: " << filename << std::endl;
+    std::cout << "  Total ROI points: " << totalPoints << std::endl;
+    std::cout << "  Valid points: " << validPoints << std::endl;
+    std::cout << "  Invalid points: " << (totalPoints - validPoints) << std::endl;
+}
+
 // Function to create a color map visualization with a scale bar
 cv::Mat visualizeDisplacementWithScaleBar(const cv::Mat& displacement, const cv::Mat& validMask, 
                                       double minVal, double maxVal, 
@@ -273,8 +347,7 @@ void processAndSaveResults(const cv::Mat& refImage, const cv::Mat& defImage,
     cv::imwrite("./result/computed_disp_x.png", uViz);
     cv::imwrite("./result/computed_disp_y.png", vViz);
     
-    // Export displacement data to CSV
-    exportToCSV(resultU, resultV, validMask, "./result/displacement_results.csv");
+    // Note: CSV export is now handled in CudaRGDIC::compute() for enhanced format
     
     // Calculate vector magnitude of displacement (for visualization)
     cv::Mat dispMag = cv::Mat::zeros(resultU.size(), CV_64F);

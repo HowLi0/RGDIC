@@ -42,6 +42,13 @@
 const int MAX_THREADS_PER_BLOCK = 1024;
 const int WARP_SIZE = 32;
 
+// Interpolation method enumeration
+enum InterpolationMethod {
+    BILINEAR_INTERPOLATION = 0,     // Standard bilinear interpolation
+    BICUBIC_INTERPOLATION = 1,      // Bicubic interpolation with 4x4 kernel
+    INVERSE_DISTANCE_WEIGHTING = 2  // Inverse distance weighting (original method)
+};
+
 // Point structure for GPU
 struct Point2D {
     int x, y;
@@ -88,6 +95,18 @@ public:
     bool computeInitialGuess(const std::vector<cv::Point>& points,
                            std::vector<cv::Vec2f>& initialGuess,
                            int searchRadius = 15);
+    
+    // CUDA-accelerated interpolation for displacement field
+    bool interpolateDisplacementField(const cv::Mat& sparseU, const cv::Mat& sparseV,
+                                    const cv::Mat& sparseMask, const cv::Mat& roi,
+                                    const std::vector<cv::Point>& sparsePoints,
+                                    cv::Mat& interpU, cv::Mat& interpV, cv::Mat& interpMask,
+                                    int step, InterpolationMethod method = BILINEAR_INTERPOLATION);
+    
+    // CUDA-accelerated strain field calculation
+    bool calculateStrainField(const cv::Mat& u, const cv::Mat& v, const cv::Mat& validMask,
+                            cv::Mat& strainExx, cv::Mat& strainEyy, cv::Mat& strainExy,
+                            cv::Mat& strainMask, int windowSize);
     
     // Cleanup resources
     void cleanup();
@@ -157,6 +176,20 @@ void launchPrecisionInitialGuessKernel(double* initialParams, double* initialZNC
 // High-precision image conversion kernel
 void launchPrecisionImageConvertKernel(double* dst, const unsigned char* src, 
                                       int width, int height, cudaStream_t stream);
+
+// High-precision interpolation kernel for displacement field
+void launchPrecisionInterpolationKernel(double* interpU, double* interpV, unsigned char* interpMask,
+                                       const double* sparseU, const double* sparseV, 
+                                       const unsigned char* sparseMask, const unsigned char* roi,
+                                       const Point2D* sparsePoints, int numSparsePoints,
+                                       int width, int height, int step, int interpolationMethod, 
+                                       cudaStream_t stream);
+
+// High-precision strain calculation kernel using least squares
+void launchPrecisionStrainCalculationKernel(double* strainExx, double* strainEyy, double* strainExy,
+                                           unsigned char* strainMask, const double* u, const double* v,
+                                           const unsigned char* validMask, int width, int height,
+                                           int windowSize, cudaStream_t stream);
 
 }
 

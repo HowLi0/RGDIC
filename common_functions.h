@@ -24,6 +24,11 @@ cv::Mat createManualROI(const cv::Mat& image);
 
 void exportToCSV(const cv::Mat& u, const cv::Mat& v, const cv::Mat& validMask, const std::string& filename);
 
+// Enhanced CSV export with strain fields and full grid output
+void exportToCSVWithStrain(const cv::Mat& u, const cv::Mat& v, const cv::Mat& validMask,
+                          const cv::Mat& exx, const cv::Mat& eyy, const cv::Mat& exy,
+                          const cv::Mat& zncc, const cv::Mat& roi, const std::string& filename);
+
 cv::Mat visualizeDisplacementWithScaleBar(const cv::Mat& displacement, const cv::Mat& validMask, 
                                       double minVal, double maxVal, 
                                       const std::string& title,

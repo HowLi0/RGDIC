@@ -457,3 +457,213 @@ void CudaDICKernelPrecision::cleanup() {
     
     std::cout << "High-precision CUDA DIC kernel cleaned up" << std::endl;
 }
+
+// CUDA-accelerated interpolation for displacement field
+bool CudaDICKernelPrecision::interpolateDisplacementField(const cv::Mat& sparseU, const cv::Mat& sparseV,
+                                                         const cv::Mat& sparseMask, const cv::Mat& roi,
+                                                         const std::vector<cv::Point>& sparsePoints,
+                                                         cv::Mat& interpU, cv::Mat& interpV, cv::Mat& interpMask,
+                                                         int step, InterpolationMethod method) {
+    
+    if (!m_initialized) {
+        std::cerr << "CUDA kernel not initialized for interpolation" << std::endl;
+        return false;
+    }
+    
+    int width = sparseU.cols;
+    int height = sparseU.rows;
+    int totalPixels = width * height;
+    
+    // Allocate GPU memory for interpolation
+    double* d_sparseU = nullptr;
+    double* d_sparseV = nullptr;
+    unsigned char* d_sparseMask = nullptr;
+    unsigned char* d_roi = nullptr;
+    Point2D* d_sparsePoints = nullptr;
+    double* d_interpU = nullptr;
+    double* d_interpV = nullptr;
+    unsigned char* d_interpMask = nullptr;
+    
+    cudaError_t err;
+    
+    // Allocate memory
+    err = cudaMalloc(&d_sparseU, totalPixels * sizeof(double));
+    if (err != cudaSuccess) return false;
+    err = cudaMalloc(&d_sparseV, totalPixels * sizeof(double));
+    if (err != cudaSuccess) { cudaFree(d_sparseU); return false; }
+    err = cudaMalloc(&d_sparseMask, totalPixels * sizeof(unsigned char));
+    if (err != cudaSuccess) { cudaFree(d_sparseU); cudaFree(d_sparseV); return false; }
+    err = cudaMalloc(&d_roi, totalPixels * sizeof(unsigned char));
+    if (err != cudaSuccess) { 
+        cudaFree(d_sparseU); cudaFree(d_sparseV); cudaFree(d_sparseMask); 
+        return false; 
+    }
+    err = cudaMalloc(&d_sparsePoints, sparsePoints.size() * sizeof(Point2D));
+    if (err != cudaSuccess) { 
+        cudaFree(d_sparseU); cudaFree(d_sparseV); cudaFree(d_sparseMask); cudaFree(d_roi);
+        return false; 
+    }
+    err = cudaMalloc(&d_interpU, totalPixels * sizeof(double));
+    if (err != cudaSuccess) { 
+        cudaFree(d_sparseU); cudaFree(d_sparseV); cudaFree(d_sparseMask); 
+        cudaFree(d_roi); cudaFree(d_sparsePoints);
+        return false; 
+    }
+    err = cudaMalloc(&d_interpV, totalPixels * sizeof(double));
+    if (err != cudaSuccess) { 
+        cudaFree(d_sparseU); cudaFree(d_sparseV); cudaFree(d_sparseMask); 
+        cudaFree(d_roi); cudaFree(d_sparsePoints); cudaFree(d_interpU);
+        return false; 
+    }
+    err = cudaMalloc(&d_interpMask, totalPixels * sizeof(unsigned char));
+    if (err != cudaSuccess) { 
+        cudaFree(d_sparseU); cudaFree(d_sparseV); cudaFree(d_sparseMask); 
+        cudaFree(d_roi); cudaFree(d_sparsePoints); cudaFree(d_interpU); cudaFree(d_interpV);
+        return false; 
+    }
+    
+    // Copy data to GPU
+    err = cudaMemcpy(d_sparseU, sparseU.ptr<double>(), totalPixels * sizeof(double), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) goto cleanup_interp;
+    err = cudaMemcpy(d_sparseV, sparseV.ptr<double>(), totalPixels * sizeof(double), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) goto cleanup_interp;
+    err = cudaMemcpy(d_sparseMask, sparseMask.ptr<unsigned char>(), totalPixels * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) goto cleanup_interp;
+    err = cudaMemcpy(d_roi, roi.ptr<unsigned char>(), totalPixels * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) goto cleanup_interp;
+    
+    // Convert sparse points to GPU format
+    {
+        std::vector<Point2D> gpuPoints(sparsePoints.size());
+        for (size_t i = 0; i < sparsePoints.size(); i++) {
+            gpuPoints[i] = Point2D(sparsePoints[i].x, sparsePoints[i].y);
+        }
+        err = cudaMemcpy(d_sparsePoints, gpuPoints.data(), sparsePoints.size() * sizeof(Point2D), cudaMemcpyHostToDevice);
+        if (err != cudaSuccess) goto cleanup_interp;
+    }
+    
+    // Launch interpolation kernel
+    launchPrecisionInterpolationKernel(d_interpU, d_interpV, d_interpMask,
+                                      d_sparseU, d_sparseV, d_sparseMask, d_roi,
+                                      d_sparsePoints, sparsePoints.size(),
+                                      width, height, step, static_cast<int>(method), m_stream);
+    
+    // Wait for completion
+    err = cudaStreamSynchronize(m_stream);
+    if (err != cudaSuccess) goto cleanup_interp;
+    
+    // Copy results back
+    err = cudaMemcpy(interpU.ptr<double>(), d_interpU, totalPixels * sizeof(double), cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) goto cleanup_interp;
+    err = cudaMemcpy(interpV.ptr<double>(), d_interpV, totalPixels * sizeof(double), cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) goto cleanup_interp;
+    err = cudaMemcpy(interpMask.ptr<unsigned char>(), d_interpMask, totalPixels * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) goto cleanup_interp;
+    
+    // Cleanup
+cleanup_interp:
+    cudaFree(d_sparseU);
+    cudaFree(d_sparseV);
+    cudaFree(d_sparseMask);
+    cudaFree(d_roi);
+    cudaFree(d_sparsePoints);
+    cudaFree(d_interpU);
+    cudaFree(d_interpV);
+    cudaFree(d_interpMask);
+    
+    return err == cudaSuccess;
+}
+
+// CUDA-accelerated strain field calculation
+bool CudaDICKernelPrecision::calculateStrainField(const cv::Mat& u, const cv::Mat& v, const cv::Mat& validMask,
+                                                 cv::Mat& strainExx, cv::Mat& strainEyy, cv::Mat& strainExy,
+                                                 cv::Mat& strainMask, int windowSize) {
+    
+    if (!m_initialized) {
+        std::cerr << "CUDA kernel not initialized for strain calculation" << std::endl;
+        return false;
+    }
+    
+    int width = u.cols;
+    int height = u.rows;
+    int totalPixels = width * height;
+    
+    // Allocate GPU memory for strain calculation
+    double* d_u = nullptr;
+    double* d_v = nullptr;
+    unsigned char* d_validMask = nullptr;
+    double* d_strainExx = nullptr;
+    double* d_strainEyy = nullptr;
+    double* d_strainExy = nullptr;
+    unsigned char* d_strainMask = nullptr;
+    
+    cudaError_t err;
+    
+    // Allocate memory
+    err = cudaMalloc(&d_u, totalPixels * sizeof(double));
+    if (err != cudaSuccess) return false;
+    err = cudaMalloc(&d_v, totalPixels * sizeof(double));
+    if (err != cudaSuccess) { cudaFree(d_u); return false; }
+    err = cudaMalloc(&d_validMask, totalPixels * sizeof(unsigned char));
+    if (err != cudaSuccess) { cudaFree(d_u); cudaFree(d_v); return false; }
+    err = cudaMalloc(&d_strainExx, totalPixels * sizeof(double));
+    if (err != cudaSuccess) { 
+        cudaFree(d_u); cudaFree(d_v); cudaFree(d_validMask); 
+        return false; 
+    }
+    err = cudaMalloc(&d_strainEyy, totalPixels * sizeof(double));
+    if (err != cudaSuccess) { 
+        cudaFree(d_u); cudaFree(d_v); cudaFree(d_validMask); cudaFree(d_strainExx);
+        return false; 
+    }
+    err = cudaMalloc(&d_strainExy, totalPixels * sizeof(double));
+    if (err != cudaSuccess) { 
+        cudaFree(d_u); cudaFree(d_v); cudaFree(d_validMask); 
+        cudaFree(d_strainExx); cudaFree(d_strainEyy);
+        return false; 
+    }
+    err = cudaMalloc(&d_strainMask, totalPixels * sizeof(unsigned char));
+    if (err != cudaSuccess) { 
+        cudaFree(d_u); cudaFree(d_v); cudaFree(d_validMask); 
+        cudaFree(d_strainExx); cudaFree(d_strainEyy); cudaFree(d_strainExy);
+        return false; 
+    }
+    
+    // Copy data to GPU
+    err = cudaMemcpy(d_u, u.ptr<double>(), totalPixels * sizeof(double), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) goto cleanup_strain;
+    err = cudaMemcpy(d_v, v.ptr<double>(), totalPixels * sizeof(double), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) goto cleanup_strain;
+    err = cudaMemcpy(d_validMask, validMask.ptr<unsigned char>(), totalPixels * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) goto cleanup_strain;
+    
+    // Launch strain calculation kernel
+    launchPrecisionStrainCalculationKernel(d_strainExx, d_strainEyy, d_strainExy, d_strainMask,
+                                          d_u, d_v, d_validMask, width, height, windowSize, m_stream);
+    
+    // Wait for completion
+    err = cudaStreamSynchronize(m_stream);
+    if (err != cudaSuccess) goto cleanup_strain;
+    
+    // Copy results back
+    err = cudaMemcpy(strainExx.ptr<double>(), d_strainExx, totalPixels * sizeof(double), cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) goto cleanup_strain;
+    err = cudaMemcpy(strainEyy.ptr<double>(), d_strainEyy, totalPixels * sizeof(double), cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) goto cleanup_strain;
+    err = cudaMemcpy(strainExy.ptr<double>(), d_strainExy, totalPixels * sizeof(double), cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) goto cleanup_strain;
+    err = cudaMemcpy(strainMask.ptr<unsigned char>(), d_strainMask, totalPixels * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) goto cleanup_strain;
+    
+    // Cleanup
+cleanup_strain:
+    cudaFree(d_u);
+    cudaFree(d_v);
+    cudaFree(d_validMask);
+    cudaFree(d_strainExx);
+    cudaFree(d_strainEyy);
+    cudaFree(d_strainExy);
+    cudaFree(d_strainMask);
+    
+    return err == cudaSuccess;
+}

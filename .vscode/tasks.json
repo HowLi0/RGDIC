@@ -1,156 +1,44 @@
 {
+    "version": "2.0.0",
     "tasks": [
         {
+            "label": "构建 CUDA 版本",
             "type": "shell",
-            "label": "设置MSVC环境",
-            "command": "cmd",
-            "args": [
-                "/c",
-                "\"D:\\Visual Studio\\VS  IDE\\VC\\Auxiliary\\Build\\vcvars64.bat\" && echo MSVC Environment Ready"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "group": "build",
-            "presentation": {
-                "echo": true,
-                "reveal": "always",
-                "focus": false,
-                "panel": "shared"
-            },
-            "problemMatcher": []
-        },
-        {
-            "type": "shell",
-            "label": "编译 CUDA kernels (MSVC)",
-            "command": "cmd",
-            "args": [
-                "/c",
-                "\"D:\\Visual Studio\\VS  IDE\\VC\\Auxiliary\\Build\\vcvars64.bat\" && nvcc -c ${workspaceFolder}/cuda_dic_kernels.cu -I ${workspaceFolder}/Eigen3 -I ${workspaceFolder}/opencv/include -I ${workspaceFolder}/fftw3/include --compiler-options \"/MD /O2\" -arch=sm_75 -o ${workspaceFolder}/cuda_dic_kernels.obj"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "group": "build",
-            "presentation": {
-                "echo": true,
-                "reveal": "always",
-                "focus": false,
-                "panel": "shared"
-            },
-            "problemMatcher": ["$nvcc"]
-        },
-        {
-            "type": "shell",
-            "label": "编译 CUDA C++ 源文件 (MSVC)",
-            "command": "cmd",
-            "args": [
-                "/c",
-                "\"D:\\Visual Studio\\VS  IDE\\VC\\Auxiliary\\Build\\vcvars64.bat\" && cl /c /MD /O2 /EHsc /DUSE_CUDA /I${workspaceFolder}/Eigen3 /I${workspaceFolder}/fftw3/include /I${workspaceFolder}/opencv/include /I\"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.8/include\" ${workspaceFolder}/cuda_rgdic.cpp ${workspaceFolder}/cuda_dic_kernel.cpp"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "group": "build",
-            "dependsOn": "编译 CUDA kernels (MSVC)"
-        },
-        {
-            "type": "shell",
-            "label": "编译 CPU 源文件 (MSVC)",
-            "command": "cmd",
-            "args": [
-                "/c",
-                "\"D:\\Visual Studio\\VS  IDE\\VC\\Auxiliary\\Build\\vcvars64.bat\" && cl /c /MD /O2 /EHsc /DUSE_CUDA /I${workspaceFolder}/Eigen3 /I${workspaceFolder}/fftw3/include /I${workspaceFolder}/opencv/include /I\"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.8/include\" ${workspaceFolder}/rgdic.cpp ${workspaceFolder}/icgn_optimizer.cpp ${workspaceFolder}/neighbor_utils.cpp"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "group": "build",
-            "dependsOn": "编译 CUDA C++ 源文件 (MSVC)"
-        },
-        {
-            "type": "shell",
-            "label": "编译主程序 (MSVC)",
-            "command": "cmd",
-            "args": [
-                "/c",
-                "\"D:\\Visual Studio\\VS  IDE\\VC\\Auxiliary\\Build\\vcvars64.bat\" && cl /c /MD /O2 /EHsc /DUSE_CUDA /I${workspaceFolder}/Eigen3 /I${workspaceFolder}/fftw3/include /I${workspaceFolder}/opencv/include /I\"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.8/include\" ${file}"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "group": "build",
-            "dependsOn": "编译 CPU 源文件 (MSVC)"
-        },
-        {
-            "type": "shell",
-            "label": "链接 CUDA 程序 (MSVC)",
-            "command": "cmd",
-            "args": [
-                "/c",
-                "\"D:\\Visual Studio\\VS  IDE\\VC\\Auxiliary\\Build\\vcvars64.bat\" && link /OUT:${fileBasenameNoExtension}_cuda.exe ${fileBasenameNoExtension}.obj rgdic.obj icgn_optimizer.obj neighbor_utils.obj cuda_rgdic.obj cuda_dic_kernel.obj cuda_dic_kernels.obj /LIBPATH:${workspaceFolder}/opencv/lib /LIBPATH:${workspaceFolder}/fftw3/lib /LIBPATH:\"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.8/lib/x64\" opencv_world4100.lib libfftw3-3.lib libfftw3f-3.lib libfftw3l-3.lib cudart.lib cublas.lib curand.lib cusolver.lib cusparse.lib /NODEFAULTLIB:LIBCMT"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
+            "command": "${workspaceFolder}/build_cuda.bat",
             "group": {
                 "kind": "build",
                 "isDefault": true
             },
-            "dependsOn": "编译主程序 (MSVC)",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
             "presentation": {
                 "echo": true,
                 "reveal": "always",
                 "focus": false,
-                "panel": "shared"
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
             },
-            "problemMatcher": ["$msCompile"]
+            "problemMatcher": []
         },
         {
+            "label": "构建 CPU 版本",
             "type": "shell",
-            "label": "C/C++: 仅CPU版本编译 (MSVC)",
-            "command": "cmd",
-            "args": [
-                "/c",
-                "\"D:\\Visual Studio\\VS  IDE\\VC\\Auxiliary\\Build\\vcvars64.bat\" && cl /MD /O2 /EHsc /I${workspaceFolder}/Eigen3 /I${workspaceFolder}/fftw3/include /I${workspaceFolder}/opencv/include ${file} ${workspaceFolder}/rgdic.cpp ${workspaceFolder}/icgn_optimizer.cpp ${workspaceFolder}/neighbor_utils.cpp /link /OUT:${fileBasenameNoExtension}_cpu.exe /LIBPATH:${workspaceFolder}/opencv/lib /LIBPATH:${workspaceFolder}/fftw3/lib opencv_world4100.lib libfftw3-3.lib libfftw3f-3.lib libfftw3l-3.lib /NODEFAULTLIB:LIBCMT"
-            ],
+            "command": "${workspaceFolder}/build_cpu.bat",
+            "group": "build",
             "options": {
                 "cwd": "${workspaceFolder}"
             },
-            "group": "build",
-            "problemMatcher": ["$msCompile"],
-            "detail": "仅编译CPU版本（不包含CUDA）"
-        },
-        {
-            "type": "shell",
-            "label": "编译 CPU 版本 (main_cpu)",
-            "command": "cmd",
-            "args": [
-                "/c",
-                "\"D:\\Visual Studio\\VS  IDE\\VC\\Auxiliary\\Build\\vcvars64.bat\" && cl /MD /O2 /EHsc /I${workspaceFolder}/Eigen3 /I${workspaceFolder}/fftw3/include /I${workspaceFolder}/opencv/include ${workspaceFolder}/main_cpu.cpp ${workspaceFolder}/common_functions.cpp ${workspaceFolder}/rgdic.cpp ${workspaceFolder}/icgn_optimizer.cpp ${workspaceFolder}/neighbor_utils.cpp /link /OUT:main_cpu.exe /LIBPATH:${workspaceFolder}/opencv/lib /LIBPATH:${workspaceFolder}/fftw3/lib opencv_world4100.lib libfftw3-3.lib libfftw3f-3.lib libfftw3l-3.lib /NODEFAULTLIB:LIBCMT"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
             },
-            "group": "build",
-            "problemMatcher": ["$msCompile"],
-            "detail": "编译独立的CPU版本main_cpu.cpp"
-        },
-        {
-            "type": "shell",
-            "label": "编译 CUDA 版本 (main_cuda)",
-            "command": "cmd",
-            "args": [
-                "/c",
-                "\"D:\\Visual Studio\\VS  IDE\\VC\\Auxiliary\\Build\\vcvars64.bat\" && nvcc -c ${workspaceFolder}/cuda_dic_kernels.cu -I ${workspaceFolder}/Eigen3 -I ${workspaceFolder}/opencv/include -I ${workspaceFolder}/fftw3/include --compiler-options \"/MD /O2\" -arch=sm_75 -o ${workspaceFolder}/cuda_dic_kernels.obj && cl /c /MD /O2 /EHsc /DUSE_CUDA /I${workspaceFolder}/Eigen3 /I${workspaceFolder}/fftw3/include /I${workspaceFolder}/opencv/include /I\"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.8/include\" ${workspaceFolder}/cuda_rgdic.cpp ${workspaceFolder}/cuda_dic_kernel.cpp ${workspaceFolder}/rgdic.cpp ${workspaceFolder}/icgn_optimizer.cpp ${workspaceFolder}/neighbor_utils.cpp ${workspaceFolder}/common_functions.cpp ${workspaceFolder}/main_cuda.cpp && link /OUT:main_cuda.exe main_cuda.obj common_functions.obj rgdic.obj icgn_optimizer.obj neighbor_utils.obj cuda_rgdic.obj cuda_dic_kernel.obj cuda_dic_kernels.obj /LIBPATH:${workspaceFolder}/opencv/lib /LIBPATH:${workspaceFolder}/fftw3/lib /LIBPATH:\"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.8/lib/x64\" opencv_world4100.lib libfftw3-3.lib libfftw3f-3.lib libfftw3l-3.lib cudart.lib cublas.lib curand.lib cusolver.lib cusparse.lib /NODEFAULTLIB:LIBCMT"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "group": "build",
-            "problemMatcher": ["$nvcc", "$msCompile"],
-            "detail": "编译独立的CUDA版本main_cuda.cpp"
+            "problemMatcher": []
         }
-    ],
-    "version": "2.0.0"
+    ]
 }

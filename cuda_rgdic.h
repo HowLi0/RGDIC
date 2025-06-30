@@ -19,7 +19,8 @@ public:
               double deltaDispThreshold = 1.0,
               ShapeFunctionOrder order = SECOND_ORDER,
               int neighborStep = 5,
-              int maxBatchSize = 5000);
+              int maxBatchSize = 5000,
+              InterpolationMethod interpolationMethod = BILINEAR_INTERPOLATION);
     
     // Destructor
     virtual ~CudaRGDIC();
@@ -50,7 +51,34 @@ public:
         double speedup;
     };
     
+    // Strain field structure
+    struct StrainField {
+        cv::Mat exx;    // Normal strain in x direction
+        cv::Mat eyy;    // Normal strain in y direction  
+        cv::Mat exy;    // Shear strain
+        cv::Mat validMask; // Valid strain points mask
+    };
+    
     PerformanceStats getLastPerformanceStats() const { return m_lastStats; }
+    
+    // Set interpolation method
+    void setInterpolationMethod(InterpolationMethod method) { m_interpolationMethod = method; }
+    InterpolationMethod getInterpolationMethod() const { return m_interpolationMethod; }
+    
+    // Get last computed strain field (for IO operations)
+    StrainField getLastStrainField() const { return m_lastStrainField; }
+    bool hasStrainField() const { return m_hasStrainField; }
+    
+    // Interpolation and strain calculation methods (CUDA-accelerated)
+    DisplacementResult interpolateDisplacementField(const DisplacementResult& sparseResult, 
+                                                   const cv::Mat& roi, 
+                                                   InterpolationMethod method = BILINEAR_INTERPOLATION);
+    StrainField calculateStrainField(const DisplacementResult& displacementResult);
+    
+    // CPU fallback versions (for comparison or when CUDA is not available)
+    DisplacementResult interpolateDisplacementFieldCPU(const DisplacementResult& sparseResult, 
+                                                      const cv::Mat& roi);
+    StrainField calculateStrainFieldCPU(const DisplacementResult& displacementResult);
     
 private:
     // High-precision CUDA kernel wrapper
@@ -59,9 +87,14 @@ private:
     // Configuration
     int m_maxBatchSize;
     bool m_gpuInitialized;
+    InterpolationMethod m_interpolationMethod;
     
     // Performance tracking
     PerformanceStats m_lastStats;
+    
+    // Strain field storage
+    StrainField m_lastStrainField;
+    bool m_hasStrainField;
     
     // Helper functions
     std::vector<cv::Point> extractROIPoints(const cv::Mat& roi);

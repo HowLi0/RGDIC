@@ -42,6 +42,9 @@ public:
     // Set new connectivity type
     void setConnectivity(ConnectivityType connectivity);
 
+    // Get current step size
+    int getStep() const { return m_step; }
+
 private:
     int m_step;
     ConnectivityType m_connectivity;

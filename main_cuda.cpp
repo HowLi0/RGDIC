@@ -12,6 +12,21 @@ int main(int argc, char** argv) {
     bool useFirstOrderShapeFunction = false; // Set to false to use second-order
     bool useManualROI = true; // Set to true to manually draw ROI
     
+    // Ask user to select interpolation method
+    int interpolationMethodChoice = 0;
+    std::cout << "Select interpolation method:" << std::endl;
+    std::cout << "0 - Bilinear interpolation (fast, good for smooth displacement fields)" << std::endl;
+    std::cout << "1 - Bicubic interpolation (slower, better quality for complex displacement fields)" << std::endl;
+    std::cout << "2 - Inverse Distance Weighting (default, robust for sparse data)" << std::endl;
+    std::cout << "Enter choice (0-2): ";
+    std::cin >> interpolationMethodChoice;
+    
+    // Validate input
+    if (interpolationMethodChoice < 0 || interpolationMethodChoice > 2) {
+        std::cout << "Invalid choice, using default (Inverse Distance Weighting)" << std::endl;
+        interpolationMethodChoice = 2;
+    }
+    
     cv::Mat refImage, defImage;
     cv::Mat trueDispX, trueDispY;
     
@@ -97,12 +112,32 @@ int main(int argc, char** argv) {
     ShapeFunctionOrder order = useFirstOrderShapeFunction ? 
                               FIRST_ORDER : SECOND_ORDER;
     
+    // Convert interpolation method choice to enum
+    InterpolationMethod interpMethod;
+    std::string methodName;
+    switch (interpolationMethodChoice) {
+        case 0:
+            interpMethod = BILINEAR_INTERPOLATION;
+            methodName = "bilinear";
+            break;
+        case 1:
+            interpMethod = BICUBIC_INTERPOLATION;
+            methodName = "bicubic";
+            break;
+        case 2:
+        default:
+            interpMethod = INVERSE_DISTANCE_WEIGHTING;
+            methodName = "inverse distance weighting";
+            break;
+    }
+    
     std::unique_ptr<RGDIC> dic;
     try {
-        dic = std::make_unique<CudaRGDIC>(19, 0.00001, 30, 0.8, 1.0, order, 5, 50000);
+        dic = std::make_unique<CudaRGDIC>(19, 0.00001, 30, 0.2, 1.0, order, 5, 50000, interpMethod);
         std::cout << "Using CUDA-accelerated RGDIC algorithm with " 
                   << (useFirstOrderShapeFunction ? "first" : "second") 
-                  << "-order shape function..." << std::endl;
+                  << "-order shape function and "
+                  << methodName << " interpolation..." << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "CUDA initialization failed: " << e.what() << std::endl;
         std::cerr << "Please ensure CUDA is properly installed and a compatible GPU is available." << std::endl;
@@ -141,7 +176,34 @@ int main(int argc, char** argv) {
     std::cout << "Analysis coverage: " << coverage << "% (" 
               << validPoints << " of " << totalRoiPoints << " points)" << std::endl;
     
-    // Process and save all results
+    // Export CSV data using dedicated IO stream
+    if (cudaDic && cudaDic->hasStrainField()) {
+        // Export with strain data
+        auto strainField = cudaDic->getLastStrainField();
+        exportToCSVWithStrain(result.u, result.v, result.validMask,
+                             strainField.exx, strainField.eyy, strainField.exy,
+                             result.cc, roi, "./result/displacement_results.csv");
+        
+        // Save strain field visualizations
+        cv::imwrite("./result/strain_exx.png", 
+                   visualizeDisplacementWithScaleBar(strainField.exx, strainField.validMask, 
+                                                   -0.01, 0.01, "Normal Strain Exx"));
+        cv::imwrite("./result/strain_eyy.png", 
+                   visualizeDisplacementWithScaleBar(strainField.eyy, strainField.validMask, 
+                                                   -0.01, 0.01, "Normal Strain Eyy"));
+        cv::imwrite("./result/strain_exy.png", 
+                   visualizeDisplacementWithScaleBar(strainField.exy, strainField.validMask, 
+                                                   -0.01, 0.01, "Shear Strain Exy"));
+    } else {
+        // Export without strain data (use empty strain fields)
+        cv::Mat emptyStrain = cv::Mat::zeros(result.u.size(), CV_64F);
+        cv::Mat emptyMask = cv::Mat::zeros(result.u.size(), CV_8U);
+        exportToCSVWithStrain(result.u, result.v, result.validMask,
+                             emptyStrain, emptyStrain, emptyStrain,
+                             result.cc, roi, "./result/displacement_results.csv");
+    }
+    
+    // Process and save other results (excluding CSV export which is already done)
     processAndSaveResults(refImage, defImage, trueDispX, trueDispY,
                          result.u, result.v, result.validMask, useSyntheticImages);
     

@@ -1,5 +1,6 @@
 #include "cuda_rgdic.h"
 #include "cuda_dic_kernel_precision.h"
+#include "common_functions.h"
 #include <chrono>
 #include <algorithm>
 #include <iostream>
@@ -7,10 +8,11 @@
 
 CudaRGDIC::CudaRGDIC(int subsetRadius, double convergenceThreshold, int maxIterations,
                      double ccThreshold, double deltaDispThreshold, ShapeFunctionOrder order,
-                     int neighborStep, int maxBatchSize)
+                     int neighborStep, int maxBatchSize, InterpolationMethod interpolationMethod)
     : RGDIC(subsetRadius, convergenceThreshold, maxIterations, ccThreshold, 
             deltaDispThreshold, order, neighborStep),
-      m_maxBatchSize(maxBatchSize), m_gpuInitialized(false), m_startTime(0.0)
+      m_maxBatchSize(maxBatchSize), m_gpuInitialized(false), m_interpolationMethod(interpolationMethod),
+      m_startTime(0.0), m_hasStrainField(false)
 {
     // Initialize CUDA device manager
     auto& deviceManager = CudaDeviceManager::getInstance();
@@ -154,6 +156,28 @@ RGDIC::DisplacementResult CudaRGDIC::compute(const cv::Mat& refImage,
     endTiming("Post-processing");
     m_lastStats.cpuProcessingTime += m_timings["Post-processing"];
     
+    // Interpolate displacement field if step size > 1
+    int step = m_neighborUtils.getStep();
+    if (step > 1) {
+        startTiming();
+        std::cout << "Step size is " << step << ", performing displacement field interpolation..." << std::endl;
+        result = interpolateDisplacementField(result, roi, m_interpolationMethod);
+        endTiming("Displacement interpolation");
+        m_lastStats.cpuProcessingTime += m_timings["Displacement interpolation"];
+        
+        // Calculate strain field
+        startTiming();
+        m_lastStrainField = calculateStrainField(result);
+        m_hasStrainField = true;
+        endTiming("Strain calculation");
+        m_lastStats.cpuProcessingTime += m_timings["Strain calculation"];
+        
+        std::cout << "Strain field calculation completed." << std::endl;
+    } else {
+        // If step size is 1, no strain field calculation by default
+        m_hasStrainField = false;
+    }
+    
     // Calculate performance statistics
     m_lastStats.totalTime = getCurrentTime() - m_startTime;
     m_lastStats.validPoints = cv::countNonZero(result.validMask);
@@ -260,8 +284,12 @@ void CudaRGDIC::integrateResults(const std::vector<cv::Point>& points,
 std::vector<cv::Point> CudaRGDIC::extractROIPoints(const cv::Mat& roi) {
     std::vector<cv::Point> points;
     
-    for (int y = m_subsetRadius; y < roi.rows - m_subsetRadius; y++) {
-        for (int x = m_subsetRadius; x < roi.cols - m_subsetRadius; x++) {
+    // Get the step size from neighbor utilities
+    int step = m_neighborUtils.getStep();
+    
+    // Extract points with proper step size
+    for (int y = m_subsetRadius; y < roi.rows - m_subsetRadius; y += step) {
+        for (int x = m_subsetRadius; x < roi.cols - m_subsetRadius; x += step) {
             if (roi.at<uchar>(y, x) > 0) {
                 points.emplace_back(x, y);
             }
@@ -436,4 +464,339 @@ int CudaDeviceManager::getMaxThreadsPerBlock() const {
 int CudaDeviceManager::getWarpSize() const {
     if (!m_initialized) return 0;
     return m_deviceProp.warpSize;
+}
+
+// CUDA-accelerated interpolation implementation with method selection
+RGDIC::DisplacementResult CudaRGDIC::interpolateDisplacementField(const DisplacementResult& sparseResult, 
+                                                                 const cv::Mat& roi, 
+                                                                 InterpolationMethod method) {
+    
+    int step = m_neighborUtils.getStep();
+    
+    // If step is 1, no interpolation needed
+    if (step == 1) {
+        return sparseResult;
+    }
+    
+    std::cout << "Interpolating displacement field with CUDA acceleration (step size " << step 
+              << ", method: " << (method == BILINEAR_INTERPOLATION ? "bilinear" : 
+                                 method == BICUBIC_INTERPOLATION ? "bicubic" : "inverse distance weighting") 
+              << ")..." << std::endl;
+    
+    // Try CUDA-accelerated interpolation first
+    if (m_gpuInitialized && m_precisionKernel) {
+        
+        // Collect valid sparse points
+        std::vector<cv::Point> sparsePoints;
+        for (int y = 0; y < sparseResult.validMask.rows; y++) {
+            for (int x = 0; x < sparseResult.validMask.cols; x++) {
+                if (sparseResult.validMask.at<uchar>(y, x) > 0) {
+                    sparsePoints.push_back(cv::Point(x, y));
+                }
+            }
+        }
+        
+        if (sparsePoints.empty()) {
+            std::cerr << "No valid sparse points for interpolation" << std::endl;
+            DisplacementResult emptyResult;
+            emptyResult.u = cv::Mat::zeros(roi.size(), CV_64F);
+            emptyResult.v = cv::Mat::zeros(roi.size(), CV_64F);
+            emptyResult.cc = cv::Mat::zeros(roi.size(), CV_64F);
+            emptyResult.validMask = cv::Mat::zeros(roi.size(), CV_8U);
+            return emptyResult;
+        }
+        
+        std::cout << "Found " << sparsePoints.size() << " valid sparse points for CUDA interpolation" << std::endl;
+        
+        // Prepare result matrices
+        DisplacementResult interpolatedResult;
+        interpolatedResult.u = cv::Mat::zeros(roi.size(), CV_64F);
+        interpolatedResult.v = cv::Mat::zeros(roi.size(), CV_64F);
+        interpolatedResult.cc = cv::Mat::zeros(roi.size(), CV_64F);
+        interpolatedResult.validMask = cv::Mat::zeros(roi.size(), CV_8U);
+        
+        // Try CUDA interpolation
+        bool cudaSuccess = m_precisionKernel->interpolateDisplacementField(
+            sparseResult.u, sparseResult.v, sparseResult.validMask, roi, sparsePoints,
+            interpolatedResult.u, interpolatedResult.v, interpolatedResult.validMask, step, method);
+        
+        if (cudaSuccess) {
+            // Copy correlation coefficient using simple assignment for interpolated points
+            sparseResult.cc.copyTo(interpolatedResult.cc, interpolatedResult.validMask);
+            
+            int interpolatedPoints = cv::countNonZero(interpolatedResult.validMask);
+            std::cout << "CUDA interpolation completed. Valid points: " << interpolatedPoints 
+                      << " (from " << sparsePoints.size() << " sparse points)" << std::endl;
+            
+            return interpolatedResult;
+        } else {
+            std::cout << "CUDA interpolation failed, falling back to CPU implementation" << std::endl;
+        }
+    }
+    
+    // Fallback to CPU implementation
+    return interpolateDisplacementFieldCPU(sparseResult, roi);
+}
+
+// CPU fallback implementation
+RGDIC::DisplacementResult CudaRGDIC::interpolateDisplacementFieldCPU(const DisplacementResult& sparseResult, 
+                                                                    const cv::Mat& roi) {
+    
+    DisplacementResult interpolatedResult;
+    interpolatedResult.u = cv::Mat::zeros(roi.size(), CV_64F);
+    interpolatedResult.v = cv::Mat::zeros(roi.size(), CV_64F);
+    interpolatedResult.cc = cv::Mat::zeros(roi.size(), CV_64F);
+    interpolatedResult.validMask = cv::Mat::zeros(roi.size(), CV_8U);
+    
+    int step = m_neighborUtils.getStep();
+    
+    // If step is 1, no interpolation needed
+    if (step == 1) {
+        return sparseResult;
+    }
+    
+    std::cout << "Interpolating displacement field with step size " << step << "..." << std::endl;
+    
+    // Collect valid sparse points and their displacements
+    std::vector<cv::Point2f> sparsePoints;
+    std::vector<float> uValues, vValues, ccValues;
+    
+    for (int y = 0; y < sparseResult.validMask.rows; y++) {
+        for (int x = 0; x < sparseResult.validMask.cols; x++) {
+            if (sparseResult.validMask.at<uchar>(y, x) > 0) {
+                sparsePoints.push_back(cv::Point2f(x, y));
+                uValues.push_back(static_cast<float>(sparseResult.u.at<double>(y, x)));
+                vValues.push_back(static_cast<float>(sparseResult.v.at<double>(y, x)));
+                ccValues.push_back(static_cast<float>(sparseResult.cc.at<double>(y, x)));
+            }
+        }
+    }
+    
+    if (sparsePoints.empty()) {
+        std::cerr << "No valid sparse points for interpolation" << std::endl;
+        return interpolatedResult;
+    }
+    
+    std::cout << "Found " << sparsePoints.size() << " valid sparse points for interpolation" << std::endl;
+    
+    // For each point in the full grid, interpolate if within ROI
+    for (int y = 0; y < roi.rows; y++) {
+        for (int x = 0; x < roi.cols; x++) {
+            if (roi.at<uchar>(y, x) > 0) {
+                cv::Point2f queryPoint(x, y);
+                
+                // Find nearby points for interpolation (use inverse distance weighting)
+                std::vector<int> nearbyIndices;
+                std::vector<float> distances;
+                
+                // Search for points within a reasonable radius
+                float maxSearchRadius = static_cast<float>(step * 2.5); // Adaptive search radius
+                
+                for (size_t i = 0; i < sparsePoints.size(); i++) {
+                    float dx = sparsePoints[i].x - queryPoint.x;
+                    float dy = sparsePoints[i].y - queryPoint.y;
+                    float dist = std::sqrt(dx*dx + dy*dy);
+                    
+                    if (dist <= maxSearchRadius) {
+                        nearbyIndices.push_back(static_cast<int>(i));
+                        distances.push_back(dist);
+                    }
+                }
+                
+                // Perform interpolation if we have enough nearby points
+                if (nearbyIndices.size() >= 3) {
+                    float weightSum = 0.0f;
+                    float interpolatedU = 0.0f;
+                    float interpolatedV = 0.0f;
+                    float interpolatedCC = 0.0f;
+                    
+                    // Inverse distance weighting with power of 2
+                    for (size_t i = 0; i < nearbyIndices.size(); i++) {
+                        int idx = nearbyIndices[i];
+                        float dist = distances[i];
+                        
+                        // Handle exact matches (distance = 0)
+                        if (dist < 1e-6) {
+                            interpolatedU = uValues[idx];
+                            interpolatedV = vValues[idx];
+                            interpolatedCC = ccValues[idx];
+                            weightSum = 1.0f;
+                            break;
+                        }
+                        
+                        float weight = 1.0f / (dist * dist); // Inverse distance squared
+                        interpolatedU += weight * uValues[idx];
+                        interpolatedV += weight * vValues[idx];
+                        interpolatedCC += weight * ccValues[idx];
+                        weightSum += weight;
+                    }
+                    
+                    if (weightSum > 0) {
+                        interpolatedResult.u.at<double>(y, x) = interpolatedU / weightSum;
+                        interpolatedResult.v.at<double>(y, x) = interpolatedV / weightSum;
+                        interpolatedResult.cc.at<double>(y, x) = interpolatedCC / weightSum;
+                        interpolatedResult.validMask.at<uchar>(y, x) = 255;
+                    }
+                }
+            }
+        }
+    }
+    
+    int interpolatedPoints = cv::countNonZero(interpolatedResult.validMask);
+    std::cout << "Interpolation completed. Valid points: " << interpolatedPoints 
+              << " (from " << sparsePoints.size() << " sparse points)" << std::endl;
+    
+    return interpolatedResult;
+}
+
+// CUDA-accelerated strain field calculation using least squares
+CudaRGDIC::StrainField CudaRGDIC::calculateStrainField(const DisplacementResult& displacementResult) {
+    
+    std::cout << "Calculating strain field using CUDA-accelerated least squares method..." << std::endl;
+    
+    StrainField strainField;
+    strainField.exx = cv::Mat::zeros(displacementResult.u.size(), CV_64F);
+    strainField.eyy = cv::Mat::zeros(displacementResult.u.size(), CV_64F);
+    strainField.exy = cv::Mat::zeros(displacementResult.u.size(), CV_64F);
+    strainField.validMask = cv::Mat::zeros(displacementResult.u.size(), CV_8U);
+    
+    // Try CUDA-accelerated strain calculation first
+    if (m_gpuInitialized && m_precisionKernel) {
+        
+        // Strain calculation window size (should be larger than subset size)
+        int strainWindowSize = m_subsetRadius + 5;
+        
+        bool cudaSuccess = m_precisionKernel->calculateStrainField(
+            displacementResult.u, displacementResult.v, displacementResult.validMask,
+            strainField.exx, strainField.eyy, strainField.exy, strainField.validMask,
+            strainWindowSize);
+        
+        if (cudaSuccess) {
+            int validStrainPoints = cv::countNonZero(strainField.validMask);
+            std::cout << "CUDA strain field calculation completed. Valid strain points: " 
+                      << validStrainPoints << std::endl;
+            return strainField;
+        } else {
+            std::cout << "CUDA strain calculation failed, falling back to CPU implementation" << std::endl;
+        }
+    }
+    
+    // Fallback to CPU implementation
+    return calculateStrainFieldCPU(displacementResult);
+}
+
+// CPU fallback implementation  
+CudaRGDIC::StrainField CudaRGDIC::calculateStrainFieldCPU(const DisplacementResult& displacementResult) {
+    
+    StrainField strainField;
+    strainField.exx = cv::Mat::zeros(displacementResult.u.size(), CV_64F);
+    strainField.eyy = cv::Mat::zeros(displacementResult.u.size(), CV_64F);
+    strainField.exy = cv::Mat::zeros(displacementResult.u.size(), CV_64F);
+    strainField.validMask = cv::Mat::zeros(displacementResult.u.size(), CV_8U);
+    
+    std::cout << "Calculating strain field using least squares method..." << std::endl;
+    
+    // Strain calculation window size (should be larger than subset size)
+    int strainWindowSize = m_subsetRadius + 5;
+    
+    int validStrainPoints = 0;
+    
+    for (int y = strainWindowSize; y < displacementResult.u.rows - strainWindowSize; y++) {
+        for (int x = strainWindowSize; x < displacementResult.u.cols - strainWindowSize; x++) {
+            
+            // Check if center point is valid
+            if (displacementResult.validMask.at<uchar>(y, x) == 0) {
+                continue;
+            }
+            
+            // Collect valid neighboring points within the strain window
+            std::vector<cv::Point> validNeighbors;
+            std::vector<double> uDisp, vDisp;
+            
+            for (int dy = -strainWindowSize; dy <= strainWindowSize; dy++) {
+                for (int dx = -strainWindowSize; dx <= strainWindowSize; dx++) {
+                    int nx = x + dx;
+                    int ny = y + dy;
+                    
+                    if (displacementResult.validMask.at<uchar>(ny, nx) > 0) {
+                        validNeighbors.push_back(cv::Point(dx, dy));
+                        uDisp.push_back(displacementResult.u.at<double>(ny, nx));
+                        vDisp.push_back(displacementResult.v.at<double>(ny, nx));
+                    }
+                }
+            }
+            
+            // Need at least 6 points for 2D least squares fitting (3 parameters each for u and v)
+            if (validNeighbors.size() < 6) {
+                continue;
+            }
+            
+            // Set up least squares system for u: u = a0 + a1*x + a2*y + a3*x^2 + a4*xy + a5*y^2
+            cv::Mat A_u(validNeighbors.size(), 6, CV_64F);
+            cv::Mat b_u(validNeighbors.size(), 1, CV_64F);
+            
+            // Set up least squares system for v: v = b0 + b1*x + b2*y + b3*x^2 + b4*xy + b5*y^2  
+            cv::Mat A_v(validNeighbors.size(), 6, CV_64F);
+            cv::Mat b_v(validNeighbors.size(), 1, CV_64F);
+            
+            for (size_t i = 0; i < validNeighbors.size(); i++) {
+                double dx = validNeighbors[i].x;
+                double dy = validNeighbors[i].y;
+                
+                // Design matrix for u and v (same structure)
+                A_u.at<double>(i, 0) = 1.0;        // constant term
+                A_u.at<double>(i, 1) = dx;         // linear x term  
+                A_u.at<double>(i, 2) = dy;         // linear y term
+                A_u.at<double>(i, 3) = dx * dx;    // quadratic x term
+                A_u.at<double>(i, 4) = dx * dy;    // cross term
+                A_u.at<double>(i, 5) = dy * dy;    // quadratic y term
+                
+                A_v.at<double>(i, 0) = 1.0;
+                A_v.at<double>(i, 1) = dx;
+                A_v.at<double>(i, 2) = dy;
+                A_v.at<double>(i, 3) = dx * dx;
+                A_v.at<double>(i, 4) = dx * dy;
+                A_v.at<double>(i, 5) = dy * dy;
+                
+                b_u.at<double>(i, 0) = uDisp[i];
+                b_v.at<double>(i, 0) = vDisp[i];
+            }
+            
+            // Solve least squares: x = (A^T A)^-1 A^T b
+            cv::Mat coeffs_u, coeffs_v;
+            
+            bool u_solved = cv::solve(A_u, b_u, coeffs_u, cv::DECOMP_SVD);
+            bool v_solved = cv::solve(A_v, b_v, coeffs_v, cv::DECOMP_SVD);
+            
+            if (u_solved && v_solved && coeffs_u.rows >= 2 && coeffs_v.rows >= 2) {
+                // Extract strain components from the fitted polynomial derivatives
+                // du/dx = a1 (coefficient of x in u polynomial)
+                // du/dy = a2 (coefficient of y in u polynomial) 
+                // dv/dx = b1 (coefficient of x in v polynomial)
+                // dv/dy = b2 (coefficient of y in v polynomial)
+                
+                double dudx = coeffs_u.at<double>(1, 0);
+                double dudy = coeffs_u.at<double>(2, 0);
+                double dvdx = coeffs_v.at<double>(1, 0);
+                double dvdy = coeffs_v.at<double>(2, 0);
+                
+                // Calculate strain components
+                double exx = dudx;                    // Normal strain in x
+                double eyy = dvdy;                    // Normal strain in y
+                double exy = 0.5 * (dudy + dvdx);    // Shear strain
+                
+                strainField.exx.at<double>(y, x) = exx;
+                strainField.eyy.at<double>(y, x) = eyy;
+                strainField.exy.at<double>(y, x) = exy;
+                strainField.validMask.at<uchar>(y, x) = 255;
+                
+                validStrainPoints++;
+            }
+        }
+    }
+    
+    std::cout << "Strain field calculation completed. Valid strain points: " 
+              << validStrainPoints << std::endl;
+    
+    return strainField;
 }

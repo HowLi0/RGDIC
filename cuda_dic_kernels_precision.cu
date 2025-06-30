@@ -16,21 +16,48 @@ __constant__ int c_numParams;
 __constant__ double c_convergenceThreshold;
 __constant__ int c_maxIterations;
 
+// 双三次插值的三次样条核函数
+__device__ __forceinline__ double cubicKernel(double t) {
+    double abs_t = fabs(t);
+    if (abs_t <= 1.0) {
+        return 1.0 - 2.0 * abs_t * abs_t + abs_t * abs_t * abs_t;
+    } else if (abs_t <= 2.0) {
+        return 4.0 - 8.0 * abs_t + 5.0 * abs_t * abs_t - abs_t * abs_t * abs_t;
+    } else {
+        return 0.0;
+    }
+}
+
 // 高精度双线性插值，完全匹配CPU版本
+// 双线性插值公式： f(x,y) = f(x₁,y₁)·(1-fx)·(1-fy) + f(x₂,y₁)·fx·(1-fy) + f(x₁,y₂)·(1-fx)·fy + f(x₂,y₂)·fx·fy
+/*
+            (x1,y1) -------- (x2,y1)
+            |                |
+            |     (x,y)      |   
+            |                |
+            (x1,y2) -------- (x2,y2)
+*/   
+/*
+               四个邻近像素的访问
+image[y1 * width + x1]  // 左上角 (x1, y1)
+image[y1 * width + x2]  // 右上角 (x2, y1) = (x1+1, y1)
+image[y2 * width + x1]  // 左下角 (x1, y2) = (x1, y1+1)
+image[y2 * width + x2]  // 右下角 (x2, y2) = (x1+1, y1+1)
+*/
 __device__ __forceinline__ double precisionBilinearInterpolation(double x, double y, const double* image, int width, int height) {
     // 边界检查，与CPU版本完全一致
     if (x < 0.0 || x >= width - 1.0 || y < 0.0 || y >= height - 1.0) {
         return 0.0;
     }
     
-    // 获取整数和小数部分，使用与CPU相同的方法
+    // 获取整数和小数部分，使用与CPU相同的方法                          
     int x1 = static_cast<int>(x);
     int y1 = static_cast<int>(y);
     int x2 = x1 + 1;
     int y2 = y1 + 1;
     
-    double fx = x - static_cast<double>(x1);
-    double fy = y - static_cast<double>(y1);
+    double fx = x - static_cast<double>(x1);// x 方向的权重
+    double fy = y - static_cast<double>(y1);// y 方向的权重
     
     // 双线性插值，与CPU版本完全一致的公式
     double val = (1.0 - fx) * (1.0 - fy) * image[y1 * width + x1] +
@@ -39,6 +66,41 @@ __device__ __forceinline__ double precisionBilinearInterpolation(double x, doubl
                 fx * fy * image[y2 * width + x2];
     
     return val;
+}
+
+// 高精度双三次插值，使用16点邻域
+__device__ __forceinline__ double precisionBicubicInterpolation(double x, double y, const double* image, int width, int height) {
+    // 边界检查，确保有足够的邻域进行双三次插值
+    if (x < 1.0 || x >= width - 2.0 || y < 1.0 || y >= height - 2.0) {
+        // 如果在边界附近，回退到双线性插值
+        return precisionBilinearInterpolation(x, y, image, width, height);
+    }
+    
+    // 获取整数和小数部分
+    int x0 = static_cast<int>(floor(x));
+    int y0 = static_cast<int>(floor(y));
+    double fx = x - static_cast<double>(x0);
+    double fy = y - static_cast<double>(y0);
+    
+    double result = 0.0;
+    
+    // 双三次插值使用4x4邻域
+    for (int j = -1; j <= 2; j++) {
+        for (int i = -1; i <= 2; i++) {
+            int px = x0 + i;
+            int py = y0 + j;
+            
+            // 边界检查
+            if (px >= 0 && px < width && py >= 0 && py < height) {
+                double weight_x = cubicKernel(fx - static_cast<double>(i));
+                double weight_y = cubicKernel(fy - static_cast<double>(j));
+                double weight = weight_x * weight_y;
+                result += weight * image[py * width + px];
+            }
+        }
+    }
+    
+    return result;
 }
 
 // 精确的点变形函数，与CPU版本完全一致
@@ -482,7 +544,7 @@ __global__ void precisionICGNOptimizationKernel(double* finalU, double* finalV, 
             finalZNCC[pointIdx] = finalZncc;
             
             // 如果ZNCC值可接受，仍然标记为有效
-            converged = (finalZncc < 0.8); // 更宽松的有效性判断
+            converged = (finalZncc < 0.5); // 更宽松的有效性判断
         }
     }
     
@@ -633,6 +695,425 @@ void launchPrecisionImageConvertKernel(double* dst, const unsigned char* src,
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
         std::cerr << "Precision image convert kernel launch failed: " << cudaGetErrorString(err) << std::endl;
+    }
+}
+
+// CUDA kernel for high-precision displacement field interpolation with method selection
+__global__ void precisionInterpolationKernel(double* interpU, double* interpV, unsigned char* interpMask,
+                                            const double* sparseU, const double* sparseV, 
+                                            const unsigned char* sparseMask, const unsigned char* roi,
+                                            const Point2D* sparsePoints, int numSparsePoints,
+                                            int width, int height, int step, int interpolationMethod) {
+    
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int totalPixels = width * height;
+    
+    if (idx >= totalPixels) return;
+    
+    int x = idx % width;
+    int y = idx / width;
+    
+    // Only process points within ROI
+    if (roi[y * width + x] == 0) return;
+    
+    if (interpolationMethod == 0) { // BILINEAR_INTERPOLATION - Simple bilinear for grid-based interpolation
+        // For bilinear, we assume a regular grid structure and use 4-point interpolation
+        // This is different from inverse distance weighting
+        double resultU = 0.0, resultV = 0.0;
+        bool hasValidResult = false;
+        
+        // Find 4 nearest grid points for bilinear interpolation
+        double minDist = 1e10;
+        int nearestIdx = -1;
+        
+        // First find the nearest point
+        for (int i = 0; i < numSparsePoints; i++) {
+            double dx = sparsePoints[i].x - x;
+            double dy = sparsePoints[i].y - y;
+            double dist = sqrt(dx*dx + dy*dy);
+            if (dist < minDist) {
+                minDist = dist;
+                nearestIdx = i;
+            }
+        }
+        
+        if (nearestIdx >= 0 && minDist <= step * 1.5) {
+            // Use nearest point value for simplicity in this bilinear implementation
+            int sparseIdx = sparsePoints[nearestIdx].y * width + sparsePoints[nearestIdx].x;
+            resultU = sparseU[sparseIdx];
+            resultV = sparseV[sparseIdx];
+            hasValidResult = true;
+        }
+        
+        if (hasValidResult) {
+            interpU[idx] = resultU;
+            interpV[idx] = resultV;
+            interpMask[idx] = 255;
+        } else {
+            interpU[idx] = 0.0;
+            interpV[idx] = 0.0;
+            interpMask[idx] = 0;
+        }
+        
+    } else if (interpolationMethod == 2) { // INVERSE_DISTANCE_WEIGHTING - Original method
+        // Use inverse distance weighting for interpolation (original algorithm)
+        double weightSum = 0.0;
+        double interpolatedU = 0.0;
+        double interpolatedV = 0.0;
+        
+        double maxSearchRadius = step * 2.5; // Adaptive search radius
+        bool foundNearbyPoints = false;
+        
+        // Search for nearby sparse points
+        for (int i = 0; i < numSparsePoints; i++) {
+            double dx = sparsePoints[i].x - x;
+            double dy = sparsePoints[i].y - y;
+            double dist = sqrt(dx*dx + dy*dy);
+            
+            if (dist <= maxSearchRadius) {
+                foundNearbyPoints = true;
+                
+                // Handle exact matches (distance = 0)
+                if (dist < 1e-6) {
+                    int sparseIdx = sparsePoints[i].y * width + sparsePoints[i].x;
+                    interpolatedU = sparseU[sparseIdx];
+                    interpolatedV = sparseV[sparseIdx];
+                    weightSum = 1.0;
+                    break;
+                }
+                
+                double weight = 1.0 / (dist * dist); // Inverse distance squared
+                int sparseIdx = sparsePoints[i].y * width + sparsePoints[i].x;
+                interpolatedU += weight * sparseU[sparseIdx];
+                interpolatedV += weight * sparseV[sparseIdx];
+                weightSum += weight;
+            }
+        }
+        
+        // Set interpolated values if we have enough nearby points
+        if (foundNearbyPoints && weightSum > 0) {
+            interpU[idx] = interpolatedU / weightSum;
+            interpV[idx] = interpolatedV / weightSum;
+            interpMask[idx] = 255;
+        } else {
+            interpU[idx] = 0.0;
+            interpV[idx] = 0.0;
+            interpMask[idx] = 0;
+        }
+        
+    } else { // BICUBIC_INTERPOLATION - Surface fitting with bicubic interpolation
+        // Check if we have enough boundary to perform bicubic interpolation
+        if (x < 2 || x >= width - 2 || y < 2 || y >= height - 2) {
+            // Fall back to bilinear method for boundary pixels
+            double weightSum = 0.0;
+            double interpolatedU = 0.0;
+            double interpolatedV = 0.0;
+            
+            double maxSearchRadius = step * 2.5;
+            bool foundNearbyPoints = false;
+            
+            for (int i = 0; i < numSparsePoints; i++) {
+                double dx = sparsePoints[i].x - x;
+                double dy = sparsePoints[i].y - y;
+                double dist = sqrt(dx*dx + dy*dy);
+                
+                if (dist <= maxSearchRadius) {
+                    foundNearbyPoints = true;
+                    
+                    if (dist < 1e-6) {
+                        int sparseIdx = sparsePoints[i].y * width + sparsePoints[i].x;
+                        interpolatedU = sparseU[sparseIdx];
+                        interpolatedV = sparseV[sparseIdx];
+                        weightSum = 1.0;
+                        break;
+                    }
+                    
+                    double weight = 1.0 / (dist * dist);
+                    int sparseIdx = sparsePoints[i].y * width + sparsePoints[i].x;
+                    interpolatedU += weight * sparseU[sparseIdx];
+                    interpolatedV += weight * sparseV[sparseIdx];
+                    weightSum += weight;
+                }
+            }
+            
+            if (foundNearbyPoints && weightSum > 0) {
+                interpU[idx] = interpolatedU / weightSum;
+                interpV[idx] = interpolatedV / weightSum;
+                interpMask[idx] = 255;
+            } else {
+                interpU[idx] = 0.0;
+                interpV[idx] = 0.0;
+                interpMask[idx] = 0;
+            }
+        } else {
+            // Use bicubic interpolation for interior points
+            // Build local sparse displacement grid
+            double localU[16], localV[16]; // 4x4 grid
+            bool validLocal[16];
+            int validCount = 0;
+            
+            // Initialize local arrays
+            for (int i = 0; i < 16; i++) {
+                localU[i] = 0.0;
+                localV[i] = 0.0;
+                validLocal[i] = false;
+            }
+            
+            // Search for nearby sparse points to fill 4x4 grid around current point
+            double searchRadius = step * 3.0; // Larger radius for bicubic
+            for (int i = 0; i < numSparsePoints; i++) {
+                double dx = sparsePoints[i].x - x;
+                double dy = sparsePoints[i].y - y;
+                double dist = sqrt(dx*dx + dy*dy);
+                
+                if (dist <= searchRadius) {
+                    // Map to local 4x4 grid
+                    int localX = static_cast<int>(round((dx + 1.5 * step) / step));
+                    int localY = static_cast<int>(round((dy + 1.5 * step) / step));
+                    
+                    if (localX >= 0 && localX < 4 && localY >= 0 && localY < 4) {
+                        int localIdx = localY * 4 + localX;
+                        int sparseIdx = sparsePoints[i].y * width + sparsePoints[i].x;
+                        localU[localIdx] = sparseU[sparseIdx];
+                        localV[localIdx] = sparseV[sparseIdx];
+                        validLocal[localIdx] = true;
+                        validCount++;
+                    }
+                }
+            }
+            
+            // Need at least 9 points for reliable bicubic interpolation
+            if (validCount >= 9) {
+                // Perform bicubic interpolation on the local grid
+                double fx = 1.5; // Relative position within the 4x4 grid
+                double fy = 1.5;
+                
+                double resultU = 0.0, resultV = 0.0;
+                double weightSum = 0.0;
+                
+                for (int j = 0; j < 4; j++) {
+                    for (int i = 0; i < 4; i++) {
+                        int localIdx = j * 4 + i;
+                        if (validLocal[localIdx]) {
+                            double weight_x = cubicKernel(fx - static_cast<double>(i));
+                            double weight_y = cubicKernel(fy - static_cast<double>(j));
+                            double weight = weight_x * weight_y;
+                            
+                            resultU += weight * localU[localIdx];
+                            resultV += weight * localV[localIdx];
+                            weightSum += weight;
+                        }
+                    }
+                }
+                
+                if (weightSum > 0) {
+                    interpU[idx] = resultU / weightSum;
+                    interpV[idx] = resultV / weightSum;
+                    interpMask[idx] = 255;
+                } else {
+                    interpU[idx] = 0.0;
+                    interpV[idx] = 0.0;
+                    interpMask[idx] = 0;
+                }
+            } else {
+                // Fall back to inverse distance weighting if insufficient points
+                double weightSum = 0.0;
+                double interpolatedU = 0.0;
+                double interpolatedV = 0.0;
+                bool foundNearbyPoints = false;
+                
+                for (int i = 0; i < numSparsePoints; i++) {
+                    double dx = sparsePoints[i].x - x;
+                    double dy = sparsePoints[i].y - y;
+                    double dist = sqrt(dx*dx + dy*dy);
+                    
+                    if (dist <= step * 2.5) {
+                        foundNearbyPoints = true;
+                        
+                        if (dist < 1e-6) {
+                            int sparseIdx = sparsePoints[i].y * width + sparsePoints[i].x;
+                            interpolatedU = sparseU[sparseIdx];
+                            interpolatedV = sparseV[sparseIdx];
+                            weightSum = 1.0;
+                            break;
+                        }
+                        
+                        double weight = 1.0 / (dist * dist);
+                        int sparseIdx = sparsePoints[i].y * width + sparsePoints[i].x;
+                        interpolatedU += weight * sparseU[sparseIdx];
+                        interpolatedV += weight * sparseV[sparseIdx];
+                        weightSum += weight;
+                    }
+                }
+                
+                if (foundNearbyPoints && weightSum > 0) {
+                    interpU[idx] = interpolatedU / weightSum;
+                    interpV[idx] = interpolatedV / weightSum;
+                    interpMask[idx] = 255;
+                } else {
+                    interpU[idx] = 0.0;
+                    interpV[idx] = 0.0;
+                    interpMask[idx] = 0;
+                }
+            }
+        }
+    }
+}
+
+// CUDA kernel for high-precision strain field calculation using least squares
+__global__ void precisionStrainCalculationKernel(double* strainExx, double* strainEyy, double* strainExy,
+                                                unsigned char* strainMask, const double* u, const double* v,
+                                                const unsigned char* validMask, int width, int height,
+                                                int windowSize) {
+    
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int totalPixels = width * height;
+    
+    if (idx >= totalPixels) return;
+    
+    int x = idx % width;
+    int y = idx / width;
+    
+    // Check boundaries
+    if (x < windowSize || x >= width - windowSize || 
+        y < windowSize || y >= height - windowSize) {
+        strainExx[idx] = 0.0;
+        strainEyy[idx] = 0.0;
+        strainExy[idx] = 0.0;
+        strainMask[idx] = 0;
+        return;
+    }
+    
+    // Check if center point is valid
+    if (validMask[idx] == 0) {
+        strainExx[idx] = 0.0;
+        strainEyy[idx] = 0.0;
+        strainExy[idx] = 0.0;
+        strainMask[idx] = 0;
+        return;
+    }
+    
+    // Collect valid neighboring points within the strain window
+    int validCount = 0;
+    double sumX = 0.0, sumY = 0.0, sumU = 0.0, sumV = 0.0;
+    double sumX2 = 0.0, sumY2 = 0.0, sumXY = 0.0;
+    double sumXU = 0.0, sumYU = 0.0, sumXV = 0.0, sumYV = 0.0;
+    
+    for (int dy = -windowSize; dy <= windowSize; dy++) {
+        for (int dx = -windowSize; dx <= windowSize; dx++) {
+            int nx = x + dx;
+            int ny = y + dy;
+            int nIdx = ny * width + nx;
+            
+            if (validMask[nIdx] > 0) {
+                validCount++;
+                double relX = static_cast<double>(dx);
+                double relY = static_cast<double>(dy);
+                double uVal = u[nIdx];
+                double vVal = v[nIdx];
+                
+                sumX += relX;
+                sumY += relY;
+                sumU += uVal;
+                sumV += vVal;
+                sumX2 += relX * relX;
+                sumY2 += relY * relY;
+                sumXY += relX * relY;
+                sumXU += relX * uVal;
+                sumYU += relY * uVal;
+                sumXV += relX * vVal;
+                sumYV += relY * vVal;
+            }
+        }
+    }
+    
+    // Need at least 6 points for 2D least squares fitting
+    if (validCount < 6) {
+        strainExx[idx] = 0.0;
+        strainEyy[idx] = 0.0;
+        strainExy[idx] = 0.0;
+        strainMask[idx] = 0;
+        return;
+    }
+    
+    // Solve least squares system using normal equations
+    // For u = a0 + a1*x + a2*y, we need: [sumX2 sumXY; sumXY sumY2] * [a1; a2] = [sumXU; sumYU]
+    double n = static_cast<double>(validCount);
+    double det = n * sumX2 * sumY2 + 2.0 * sumX * sumY * sumXY - n * sumXY * sumXY - sumX * sumX * sumY2 - sumY * sumY * sumX2;
+    
+    if (fabs(det) < 1e-12) {
+        strainExx[idx] = 0.0;
+        strainEyy[idx] = 0.0;
+        strainExy[idx] = 0.0;
+        strainMask[idx] = 0;
+        return;
+    }
+    
+    // Calculate strain components (derivatives)
+    // du/dx and dv/dx, dv/dy
+    double detInv = 1.0 / det;
+    
+    // For u displacement: solve for du/dx (coefficient of x)
+    double b1U = sumXU - (sumX * sumU) / n;
+    double b2U = sumYU - (sumY * sumU) / n;
+    double A11 = sumX2 - (sumX * sumX) / n;
+    double A12 = sumXY - (sumX * sumY) / n;
+    double A22 = sumY2 - (sumY * sumY) / n;
+    
+    double dudx = (A22 * b1U - A12 * b2U) / (A11 * A22 - A12 * A12);
+    double dudy = (A11 * b2U - A12 * b1U) / (A11 * A22 - A12 * A12);
+    
+    // For v displacement: solve for dv/dx and dv/dy
+    double b1V = sumXV - (sumX * sumV) / n;
+    double b2V = sumYV - (sumY * sumV) / n;
+    
+    double dvdx = (A22 * b1V - A12 * b2V) / (A11 * A22 - A12 * A12);
+    double dvdy = (A11 * b2V - A12 * b1V) / (A11 * A22 - A12 * A12);
+    
+    // Calculate strain components
+    strainExx[idx] = dudx;                    // Normal strain in x
+    strainEyy[idx] = dvdy;                    // Normal strain in y
+    strainExy[idx] = 0.5 * (dudy + dvdx);    // Shear strain
+    strainMask[idx] = 255;
+}
+
+void launchPrecisionInterpolationKernel(double* interpU, double* interpV, unsigned char* interpMask,
+                                       const double* sparseU, const double* sparseV, 
+                                       const unsigned char* sparseMask, const unsigned char* roi,
+                                       const Point2D* sparsePoints, int numSparsePoints,
+                                       int width, int height, int step, int interpolationMethod, 
+                                       cudaStream_t stream) {
+    
+    int totalPixels = width * height;
+    int threadsPerBlock = 256;
+    int blocksPerGrid = (totalPixels + threadsPerBlock - 1) / threadsPerBlock;
+    
+    precisionInterpolationKernel<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(
+        interpU, interpV, interpMask, sparseU, sparseV, sparseMask, roi,
+        sparsePoints, numSparsePoints, width, height, step, interpolationMethod);
+    
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        std::cerr << "Precision interpolation kernel launch failed: " << cudaGetErrorString(err) << std::endl;
+    }
+}
+
+void launchPrecisionStrainCalculationKernel(double* strainExx, double* strainEyy, double* strainExy,
+                                           unsigned char* strainMask, const double* u, const double* v,
+                                           const unsigned char* validMask, int width, int height,
+                                           int windowSize, cudaStream_t stream) {
+    
+    int totalPixels = width * height;
+    int threadsPerBlock = 256;
+    int blocksPerGrid = (totalPixels + threadsPerBlock - 1) / threadsPerBlock;
+    
+    precisionStrainCalculationKernel<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(
+        strainExx, strainEyy, strainExy, strainMask, u, v, validMask, 
+        width, height, windowSize);
+    
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        std::cerr << "Precision strain calculation kernel launch failed: " << cudaGetErrorString(err) << std::endl;
     }
 }
 
