@@ -1,4 +1,4 @@
-# RGDIC2 - Reliability-Guided Digital Image Correlation with CUDA Acceleration
+# RGDIC - Reliability-Guided Digital Image Correlation with CUDA Acceleration
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CUDA](https://img.shields.io/badge/CUDA-11.0+-green.svg)](https://developer.nvidia.com/cuda-downloads)
