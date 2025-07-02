@@ -7,6 +7,7 @@
 #include <opencv2/opencv.hpp>
 #include "icgn_optimizer.h"
 #include "neighbor_utils.h"
+#include "poi.h"
 
 class RGDIC {
 public:
@@ -16,6 +17,53 @@ public:
         cv::Mat v;           // y-displacement field
         cv::Mat cc;          // correlation coefficient (ZNCC)
         cv::Mat validMask;   // valid points mask
+        
+        // POI-based representation (new)
+        POICollection pois;  // Collection of Points of Interest
+        
+        // Conversion functions
+        /**
+         * @brief Convert matrix-based results to POI collection
+         * @param roi The region of interest mask used during computation
+         */
+        void convertMatrixToPOIs(const cv::Mat& roi = cv::Mat());
+        
+        /**
+         * @brief Convert POI collection back to matrix format
+         * @param imageSize Size of the output matrices
+         */
+        void convertPOIsToMatrix(const cv::Size& imageSize);
+        
+        /**
+         * @brief Export results to CSV with complete coordinate information
+         * @param filename Output filename
+         */
+        void exportToCSV(const std::string& filename) const;
+        
+        /**
+         * @brief Export POIs to CSV format (delegates to POICollection)
+         * @param filename Output filename
+         */
+        void exportToPOIFormat(const std::string& filename) const;
+        
+        /**
+         * @brief Get number of valid analysis points
+         */
+        size_t getValidPointCount() const;
+        
+        /**
+         * @brief Check if POI data is available
+         */
+        bool hasPOIData() const;
+        
+        /**
+         * @brief Associate strain field data with POIs
+         * @param exx Normal strain in x direction
+         * @param eyy Normal strain in y direction  
+         * @param exy Shear strain
+         * @param strainValidMask Optional mask for valid strain data
+         */
+        void associateStrainWithPOIs(const cv::Mat& exx, const cv::Mat& eyy, const cv::Mat& exy, const cv::Mat& strainValidMask = cv::Mat());
     };
     
     // Constructor

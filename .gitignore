@@ -1,0 +1,30 @@
+# Build artifacts
+*.exe
+*.obj
+*.o
+*.so
+*.a
+*.lib
+*.dll
+*.pdb
+main_cpu_test
+main_cuda_test
+
+# CMake build directories
+build/
+cmake-build-*/
+
+# IDE files
+.vscode/
+.vs/
+*.vcproj
+*.vcxproj
+*.sln
+
+# Generated results
+result/
+temp/
+
+# OS specific
+.DS_Store
+Thumbs.db

@@ -440,3 +440,90 @@ void processAndSaveResults(const cv::Mat& refImage, const cv::Mat& defImage,
                   << " pixels, Max Error = " << maxErrV << " pixels" << std::endl;
     }
 }
+
+// POI visualization functions implementation
+
+cv::Mat visualizePOICorrespondences(const cv::Mat& refImage, const cv::Mat& defImage,
+                                   const POICollection& pois, int maxPOIs) {
+    // Create side-by-side visualization
+    cv::Mat refColor, defColor;
+    if (refImage.channels() == 1) {
+        cv::cvtColor(refImage, refColor, cv::COLOR_GRAY2BGR);
+    } else {
+        refColor = refImage.clone();
+    }
+    
+    if (defImage.channels() == 1) {
+        cv::cvtColor(defImage, defColor, cv::COLOR_GRAY2BGR);
+    } else {
+        defColor = defImage.clone();
+    }
+    
+    // Create combined image
+    cv::Mat combined;
+    cv::hconcat(refColor, defColor, combined);
+    
+    // Draw POI correspondences
+    int count = 0;
+    cv::RNG rng(12345);
+    
+    for (const auto& poi : pois.pois) {
+        if (!poi.isValid() || count >= maxPOIs) break;
+        
+        // Generate random color for this correspondence
+        cv::Scalar color(rng.uniform(0, 255), rng.uniform(0, 255), rng.uniform(0, 255));
+        
+        // Draw points
+        cv::Point leftPt(static_cast<int>(poi.leftCoord.x), static_cast<int>(poi.leftCoord.y));
+        cv::Point rightPt(static_cast<int>(poi.rightCoord.x + refImage.cols), static_cast<int>(poi.rightCoord.y));
+        
+        cv::circle(combined, leftPt, 3, color, -1);
+        cv::circle(combined, rightPt, 3, color, -1);
+        
+        // Draw correspondence line
+        cv::line(combined, leftPt, rightPt, color, 1);
+        
+        count++;
+    }
+    
+    // Add text annotation
+    cv::putText(combined, "Reference Image", cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(255, 255, 255), 2);
+    cv::putText(combined, "Deformed Image", cv::Point(refImage.cols + 10, 30), cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(255, 255, 255), 2);
+    cv::putText(combined, "POIs: " + std::to_string(count), cv::Point(10, 60), cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(255, 255, 255), 2);
+    
+    return combined;
+}
+
+cv::Mat visualizePOIDisplacementField(const cv::Size& imageSize, const POICollection& pois, double scale) {
+    // Create visualization image
+    cv::Mat vis = cv::Mat::zeros(imageSize, CV_8UC3);
+    
+    for (const auto& poi : pois.pois) {
+        if (!poi.isValid()) continue;
+        
+        cv::Point start(static_cast<int>(poi.leftCoord.x), static_cast<int>(poi.leftCoord.y));
+        cv::Point end(static_cast<int>(poi.leftCoord.x + poi.displacement[0] * scale),
+                      static_cast<int>(poi.leftCoord.y + poi.displacement[1] * scale));
+        
+        // Check bounds
+        if (start.x >= 0 && start.x < imageSize.width && start.y >= 0 && start.y < imageSize.height) {
+            // Color based on displacement magnitude
+            double magnitude = poi.getDisplacementMagnitude();
+            cv::Scalar color;
+            
+            if (magnitude < 1.0) {
+                color = cv::Scalar(0, 255, 0); // Green for small displacements
+            } else if (magnitude < 5.0) {
+                color = cv::Scalar(0, 255, 255); // Yellow for medium displacements
+            } else {
+                color = cv::Scalar(0, 0, 255); // Red for large displacements
+            }
+            
+            // Draw displacement vector
+            cv::arrowedLine(vis, start, end, color, 1, 8, 0, 0.3);
+            cv::circle(vis, start, 2, color, -1);
+        }
+    }
+    
+    return vis;
+}

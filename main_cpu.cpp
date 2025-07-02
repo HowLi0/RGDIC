@@ -119,6 +119,29 @@ int main(int argc, char** argv) {
     std::cout << "Analysis coverage: " << coverage << "% (" 
               << validPoints << " of " << totalRoiPoints << " points)" << std::endl;
     
+    // Demonstrate POI functionality
+    std::cout << "\n=== POI Analysis Results ===" << std::endl;
+    std::cout << "Total POIs: " << result.pois.size() << std::endl;
+    std::cout << "Valid POIs: " << result.pois.getValidCount() << std::endl;
+    
+    // Create POI visualizations
+    std::cout << "Creating POI visualizations..." << std::endl;
+    cv::Mat poiCorrespondences = visualizePOICorrespondences(refImage, defImage, result.pois, 100);
+    cv::Mat poiDisplacementField = visualizePOIDisplacementField(refImage.size(), result.pois, 20.0);
+    
+    // Show and save POI visualizations
+    cv::imshow("POI Correspondences", poiCorrespondences);
+    cv::imshow("POI Displacement Field", poiDisplacementField);
+    cv::imwrite("./result/poi_correspondences.png", poiCorrespondences);
+    cv::imwrite("./result/poi_displacement_field.png", poiDisplacementField);
+    
+    // Export POI data to CSV
+    std::cout << "Exporting POI data to CSV..." << std::endl;
+    result.exportToCSV("./result/poi_results.csv");
+    
+    // Export traditional format as well for comparison
+    exportToCSV(result.u, result.v, result.validMask, "./result/traditional_results.csv");
+    
     // Process and save all results
     processAndSaveResults(refImage, defImage, trueDispX, trueDispY,
                          result.u, result.v, result.validMask, useSyntheticImages);

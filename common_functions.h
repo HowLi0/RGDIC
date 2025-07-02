@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iomanip>
 #include <sstream>
+#include "poi.h"
 
 // Global variables for ROI drawing
 extern cv::Mat roiImage;
@@ -38,5 +39,27 @@ void processAndSaveResults(const cv::Mat& refImage, const cv::Mat& defImage,
                           const cv::Mat& trueDispX, const cv::Mat& trueDispY,
                           const cv::Mat& resultU, const cv::Mat& resultV, 
                           const cv::Mat& validMask, bool useSyntheticImages);
+
+// POI visualization functions
+/**
+ * @brief Visualize POI correspondences between reference and deformed images
+ * @param refImage Reference image
+ * @param defImage Deformed image
+ * @param pois POI collection
+ * @param maxPOIs Maximum number of POIs to visualize (for performance)
+ * @return Combined visualization image
+ */
+cv::Mat visualizePOICorrespondences(const cv::Mat& refImage, const cv::Mat& defImage,
+                                   const POICollection& pois, int maxPOIs = 200);
+
+/**
+ * @brief Create displacement vector field visualization from POIs
+ * @param imageSize Size of the output image
+ * @param pois POI collection
+ * @param scale Scale factor for displacement vectors
+ * @return Displacement vector field image
+ */
+cv::Mat visualizePOIDisplacementField(const cv::Size& imageSize, const POICollection& pois, 
+                                     double scale = 10.0);
 
 #endif // COMMON_FUNCTIONS_H

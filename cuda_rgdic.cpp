@@ -178,6 +178,15 @@ RGDIC::DisplacementResult CudaRGDIC::compute(const cv::Mat& refImage,
         m_hasStrainField = false;
     }
     
+    // Convert matrix results to POI format for enhanced data access
+    result.convertMatrixToPOIs(roi);
+    
+    // Associate strain data with POIs if available
+    if (m_hasStrainField) {
+        result.associateStrainWithPOIs(m_lastStrainField.exx, m_lastStrainField.eyy, 
+                                      m_lastStrainField.exy, m_lastStrainField.validMask);
+    }
+    
     // Calculate performance statistics
     m_lastStats.totalTime = getCurrentTime() - m_startTime;
     m_lastStats.validPoints = cv::countNonZero(result.validMask);
@@ -238,6 +247,10 @@ RGDIC::DisplacementResult CudaRGDIC::computeBatch(const cv::Mat& refImage,
         std::cout << "Processed batch " << (batchIdx + 1) << "/" << batches.size() 
                   << " (" << batchPoints.size() << " points)" << std::endl;
     }
+    
+    // Convert matrix results to POI format for enhanced data access
+    cv::Mat fullROI = cv::Mat::ones(result.u.size(), CV_8UC1);
+    result.convertMatrixToPOIs(fullROI);
     
     return result;
 }

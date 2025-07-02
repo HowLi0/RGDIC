@@ -146,6 +146,9 @@ RGDIC::DisplacementResult RGDIC::compute(const cv::Mat& refImage, const cv::Mat&
     // Update result with filtered mask
     result.validMask = validMaskCopy;
     
+    // Convert matrix results to POI format for enhanced data access
+    result.convertMatrixToPOIs(roi);
+    
     return result;
 }
 
@@ -388,4 +391,128 @@ std::unique_ptr<RGDIC> createRGDIC(bool useCuda,
     // For CPU version, ignore useCuda parameter and always create CPU instance
     return std::make_unique<RGDIC>(subsetRadius, convergenceThreshold, maxIterations,
                                    ccThreshold, deltaDispThreshold, order, neighborStep);
+}
+
+// DisplacementResult method implementations
+
+void RGDIC::DisplacementResult::convertMatrixToPOIs(const cv::Mat& roi) {
+    pois.clear();
+    
+    if (u.empty() || v.empty() || cc.empty() || validMask.empty()) {
+        return;
+    }
+    
+    // Use ROI if provided, otherwise process all valid points
+    cv::Mat effectiveROI = roi.empty() ? cv::Mat::ones(u.size(), CV_8UC1) : roi;
+    
+    for (int y = 0; y < u.rows; y++) {
+        for (int x = 0; x < u.cols; x++) {
+            // Check if point is in ROI and has valid data
+            if (effectiveROI.at<uchar>(y, x) > 0 && validMask.at<uchar>(y, x) > 0) {
+                POI poi;
+                
+                // Set left coordinate (reference image position)
+                poi.leftCoord = cv::Point2f(x, y);
+                
+                // Set displacement
+                poi.displacement[0] = u.at<double>(y, x);
+                poi.displacement[1] = v.at<double>(y, x);
+                
+                // Calculate right coordinate (deformed image position)
+                poi.updateRightCoord();
+                
+                // Set correlation and validity
+                poi.correlation = cc.at<double>(y, x);
+                poi.valid = true;
+                
+                pois.addPOI(poi);
+            }
+        }
+    }
+    
+    std::cout << "Converted matrix data to " << pois.size() << " POIs" << std::endl;
+}
+
+void RGDIC::DisplacementResult::convertPOIsToMatrix(const cv::Size& imageSize) {
+    // Initialize matrices
+    u = cv::Mat::zeros(imageSize, CV_64F);
+    v = cv::Mat::zeros(imageSize, CV_64F);
+    cc = cv::Mat::ones(imageSize, CV_64F); // Initialize to 1.0 (worst correlation)
+    validMask = cv::Mat::zeros(imageSize, CV_8UC1);
+    
+    // Populate matrices from POI data
+    for (const auto& poi : pois.pois) {
+        if (poi.isValid()) {
+            int x = static_cast<int>(std::round(poi.leftCoord.x));
+            int y = static_cast<int>(std::round(poi.leftCoord.y));
+            
+            // Check bounds
+            if (x >= 0 && x < imageSize.width && y >= 0 && y < imageSize.height) {
+                u.at<double>(y, x) = poi.displacement[0];
+                v.at<double>(y, x) = poi.displacement[1];
+                cc.at<double>(y, x) = poi.correlation;
+                validMask.at<uchar>(y, x) = 255;
+            }
+        }
+    }
+    
+    std::cout << "Converted " << pois.size() << " POIs to matrix format" << std::endl;
+}
+
+void RGDIC::DisplacementResult::exportToCSV(const std::string& filename) const {
+    if (hasPOIData()) {
+        pois.exportToCSV(filename);
+    } else {
+        std::cerr << "No POI data available for export. Call convertMatrixToPOIs() first." << std::endl;
+    }
+}
+
+void RGDIC::DisplacementResult::exportToPOIFormat(const std::string& filename) const {
+    exportToCSV(filename);
+}
+
+size_t RGDIC::DisplacementResult::getValidPointCount() const {
+    if (hasPOIData()) {
+        return pois.getValidCount();
+    } else if (!validMask.empty()) {
+        return cv::countNonZero(validMask);
+    }
+    return 0;
+}
+
+bool RGDIC::DisplacementResult::hasPOIData() const {
+    return !pois.empty();
+}
+
+void RGDIC::DisplacementResult::associateStrainWithPOIs(const cv::Mat& exx, const cv::Mat& eyy, const cv::Mat& exy, const cv::Mat& strainValidMask) {
+    if (!hasPOIData()) {
+        std::cerr << "No POI data available. Call convertMatrixToPOIs() first." << std::endl;
+        return;
+    }
+    
+    if (exx.empty() || eyy.empty() || exy.empty()) {
+        std::cerr << "Strain matrices are empty." << std::endl;
+        return;
+    }
+    
+    cv::Mat effectiveStrainMask = strainValidMask.empty() ? cv::Mat::ones(exx.size(), CV_8UC1) : strainValidMask;
+    
+    int strainAssignedCount = 0;
+    
+    for (auto& poi : pois.pois) {
+        int x = static_cast<int>(std::round(poi.leftCoord.x));
+        int y = static_cast<int>(std::round(poi.leftCoord.y));
+        
+        // Check bounds and validity
+        if (x >= 0 && x < exx.cols && y >= 0 && y < exx.rows && 
+            effectiveStrainMask.at<uchar>(y, x) > 0) {
+            
+            poi.setStrain(exx.at<double>(y, x), 
+                         eyy.at<double>(y, x), 
+                         exy.at<double>(y, x));
+            strainAssignedCount++;
+        }
+    }
+    
+    std::cout << "Associated strain data with " << strainAssignedCount << " POIs" << std::endl;
 }
