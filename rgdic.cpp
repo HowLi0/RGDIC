@@ -386,8 +386,8 @@ std::unique_ptr<RGDIC> createRGDIC(bool useCuda,
                                    ShapeFunctionOrder order,
                                    int neighborStep) {
     // For CPU version, ignore useCuda parameter and always create CPU instance
-    return std::make_unique<RGDIC>(subsetRadius, convergenceThreshold, maxIterations,
-                                   ccThreshold, deltaDispThreshold, order, neighborStep);
+    return std::unique_ptr<RGDIC>(new RGDIC(subsetRadius, convergenceThreshold, maxIterations,
+                                           ccThreshold, deltaDispThreshold, order, neighborStep));
 }
 
 // DisplacementResult methods implementation

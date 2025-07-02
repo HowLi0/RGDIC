@@ -119,6 +119,33 @@ int main(int argc, char** argv) {
     std::cout << "Analysis coverage: " << coverage << "% (" 
               << validPoints << " of " << totalRoiPoints << " points)" << std::endl;
     
+    // Demonstrate POI functionality
+    std::cout << "\n=== POI Mode Demonstration ===" << std::endl;
+    
+    // Enable POI mode and convert from matrix format
+    result.enablePOIs(true);
+    result.convertMatrixToPOIs();
+    
+    std::cout << "Converted to POI format:" << std::endl;
+    std::cout << "  Total POIs: " << result.pois.size() << std::endl;
+    std::cout << "  Valid POIs: " << result.pois.getValidCount() << std::endl;
+    std::cout << "  Mean correlation: " << result.pois.getMeanCorrelation() << std::endl;
+    
+    // Filter high-quality POIs
+    auto highQualityPOIs = result.pois.filterByCorrelation(0.9);
+    std::cout << "  High quality POIs (correlation >= 0.9): " << highQualityPOIs.size() << std::endl;
+    
+    // Export POI results
+    bool csvExported = result.pois.exportToCSV("./result/poi_results.csv");
+    bool poiExported = result.pois.exportToPOIFormat("./result/poi_results.poi");
+    
+    std::cout << "POI export results:" << std::endl;
+    std::cout << "  CSV format: " << (csvExported ? "Success" : "Failed") << std::endl;
+    std::cout << "  POI format: " << (poiExported ? "Success" : "Failed") << std::endl;
+    
+    // Display POI statistics
+    dic->displayPOIStatistics(result.pois);
+    
     // Process and save all results
     processAndSaveResults(refImage, defImage, trueDispX, trueDispY,
                          result.u, result.v, result.validMask, useSyntheticImages);
