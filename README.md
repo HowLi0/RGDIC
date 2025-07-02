@@ -29,6 +29,14 @@ A high-performance Digital Image Correlation (DIC) implementation with CUDA acce
 - **Outlier Detection**: Displacement jump-based filtering
 - **Quality Control**: Correlation coefficient thresholding
 
+### POI (Point of Interest) Design Pattern
+- **OpenCorr-Compatible Structure**: Modern POI-based data management following industry standards
+- **Complete Coordinate Mapping**: Full left-right image coordinate correspondence
+- **Dual Data Representation**: Both matrix-based and POI-based access patterns
+- **Enhanced Export Formats**: Rich CSV output with complete coordinate and strain information
+- **Strain Integration**: Automatic association of strain data with individual POIs
+- **Backward Compatibility**: Existing matrix-based API remains fully functional
+
 ### I/O and Visualization
 - **Comprehensive CSV Export**: Enhanced format with strain data
 - **Visualization Tools**: Displacement and strain field visualizations with scale bars
@@ -118,6 +126,46 @@ cv::Mat cc = result.cc;         // Correlation coefficient
 cv::Mat mask = result.validMask; // Valid points mask
 ```
 
+### POI-Based Analysis
+
+The new POI design pattern provides enhanced data access and coordinate mapping:
+
+```cpp
+#include "rgdic.h"
+#include "poi.h"
+
+// Run RGDIC analysis
+auto dic = createRGDIC(false, 15, 0.00001, 30, 0.8, 1.0, SECOND_ORDER, 5);
+auto result = dic->compute(refImage, defImage, roi);
+
+// Access POI data (automatically generated)
+std::cout << "Total POIs: " << result.pois.size() << std::endl;
+std::cout << "Valid POIs: " << result.pois.getValidCount() << std::endl;
+
+// Access individual POI data
+for (const auto& poi : result.pois.pois) {
+    if (poi.isValid()) {
+        std::cout << "Left coord: (" << poi.leftCoord.x << ", " << poi.leftCoord.y << ")" << std::endl;
+        std::cout << "Right coord: (" << poi.rightCoord.x << ", " << poi.rightCoord.y << ")" << std::endl;
+        std::cout << "Displacement: (" << poi.displacement[0] << ", " << poi.displacement[1] << ")" << std::endl;
+        std::cout << "Correlation: " << poi.correlation << std::endl;
+        
+        if (poi.strain.computed) {
+            std::cout << "Strain: exx=" << poi.strain.exx << ", eyy=" << poi.strain.eyy 
+                      << ", exy=" << poi.strain.exy << std::endl;
+        }
+    }
+}
+
+// Export complete coordinate and strain data
+result.exportToCSV("complete_results.csv");
+// Output format: left_x,left_y,right_x,right_y,u,v,exx,eyy,exy,zncc
+
+// Convert between matrix and POI formats
+result.convertPOIsToMatrix(imageSize);  // POI -> matrix
+result.convertMatrixToPOIs(roi);        // matrix -> POI
+```
+
 ### Command Line Usage
 
 ```bash
@@ -153,7 +201,7 @@ int neighborStep = 5;                // Point spacing (pixels)
 ## 📊 Output
 
 ### CSV Data Format
-The software exports comprehensive results in CSV format:
+The software exports comprehensive results in CSV format with complete coordinate mapping:
 
 ```csv
 left_x,left_y,right_x,right_y,u,v,exx,eyy,exy,zncc
@@ -161,12 +209,14 @@ left_x,left_y,right_x,right_y,u,v,exx,eyy,exy,zncc
 ```
 
 Where:
-- `left_x, left_y`: Reference image coordinates
-- `right_x, right_y`: Deformed image coordinates
+- `left_x, left_y`: Reference image coordinates (POI position)
+- `right_x, right_y`: Deformed image coordinates (after displacement)
 - `u, v`: Displacement components (pixels)
 - `exx, eyy`: Normal strain components
-- `exy`: Shear strain component
+- `exy`: Shear strain component  
 - `zncc`: Zero-normalized cross-correlation coefficient
+
+This format provides complete coordinate correspondence between reference and deformed images, enabling advanced post-processing and validation workflows.
 
 ### Generated Files
 - `displacement_results.csv`: Complete displacement and strain data
@@ -177,6 +227,14 @@ Where:
 - `strain_exy.png`: Shear strain εxy visualization
 - `vector_field.png`: Displacement vector field
 - `selected_roi.png`: Region of interest visualization
+- `poi_correspondences.png`: Point correspondences between reference and deformed images
+- `poi_displacement_field.png`: Vector field visualization from POI data
+
+### POI Visualization Features
+- **Point Correspondence Visualization**: Side-by-side display of matching points
+- **Color-Coded Displacement Vectors**: Visual representation of displacement magnitude and direction  
+- **Interactive Point Selection**: Ability to visualize subsets of POIs for clarity
+- **Enhanced Vector Fields**: Improved displacement field visualization from POI data
 
 ## 🔧 Algorithm Details
 
