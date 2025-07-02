@@ -1,0 +1,31 @@
+# Build artifacts
+*.o
+*.obj
+*.exe
+*.lib
+*.pdb
+*.dll
+*.exp
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# IDE files
+.vscode/
+.vs/
+*.vcxproj*
+*.sln
+
+# Temporary files
+tmp/
+temp/
+
+# Result directories
+result/
+
+# Test images (if generated)
+test_*.png
+debug_*.png

@@ -7,15 +7,37 @@
 #include <opencv2/opencv.hpp>
 #include "icgn_optimizer.h"
 #include "neighbor_utils.h"
+#include "poi.h"
 
 class RGDIC {
 public:
     // Result structure to hold displacement fields
     struct DisplacementResult {
+        // Matrix format (original - for backward compatibility)
         cv::Mat u;           // x-displacement field
         cv::Mat v;           // y-displacement field
         cv::Mat cc;          // correlation coefficient (ZNCC)
         cv::Mat validMask;   // valid points mask
+        
+        // POI format (new feature)
+        rgdic::POICollection pois;    // POI集合
+        bool poisEnabled;             // 是否启用POI模式
+        
+        // Constructor
+        DisplacementResult() : poisEnabled(false) {}
+        
+        // Conversion functions
+        void convertMatrixToPOIs();   // 将矩阵格式转换为POI格式
+        void convertPOIsToMatrix();   // 将POI格式转换为矩阵格式
+        void syncPOIsWithMatrices();  // 同步POI和矩阵数据
+        
+        // Export functions
+        bool exportToCSV(const std::string& filename) const;
+        bool exportToPOIFormat(const std::string& filename) const;
+        
+        // POI mode control
+        void enablePOIs(bool enable = true) { poisEnabled = enable; }
+        bool isPOIsEnabled() const { return poisEnabled; }
     };
     
     // Constructor
@@ -38,6 +60,13 @@ public:
     // Utility function to display results
     void displayResults(const cv::Mat& refImage, const DisplacementResult& result, 
                       const cv::Mat& trueDispX = cv::Mat(), const cv::Mat& trueDispY = cv::Mat());
+    
+    // POI-specific visualization functions
+    void displayPOIResults(const cv::Mat& refImage, const cv::Mat& defImage, 
+                          const DisplacementResult& result);
+    void displayPOICorrespondences(const cv::Mat& refImage, const cv::Mat& defImage,
+                                  const rgdic::POICollection& pois, int maxPoints = 100);
+    void displayPOIStatistics(const rgdic::POICollection& pois);
     
     // Evaluate errors if ground truth is available
     void evaluateErrors(const DisplacementResult& result, 

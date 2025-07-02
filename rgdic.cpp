@@ -389,3 +389,145 @@ std::unique_ptr<RGDIC> createRGDIC(bool useCuda,
     return std::make_unique<RGDIC>(subsetRadius, convergenceThreshold, maxIterations,
                                    ccThreshold, deltaDispThreshold, order, neighborStep);
 }
+
+// DisplacementResult methods implementation
+void RGDIC::DisplacementResult::convertMatrixToPOIs() {
+    if (!u.empty() && !v.empty()) {
+        pois.convertFromMatrices(u, v, cc, validMask);
+        poisEnabled = true;
+    }
+}
+
+void RGDIC::DisplacementResult::convertPOIsToMatrix() {
+    if (!pois.empty()) {
+        pois.convertToMatrices(u, v, cc, validMask);
+    }
+}
+
+void RGDIC::DisplacementResult::syncPOIsWithMatrices() {
+    if (poisEnabled && !pois.empty()) {
+        pois.convertToMatrices(u, v, cc, validMask);
+    } else if (!u.empty() && !v.empty()) {
+        pois.convertFromMatrices(u, v, cc, validMask);
+        poisEnabled = true;
+    }
+}
+
+bool RGDIC::DisplacementResult::exportToCSV(const std::string& filename) const {
+    if (poisEnabled && !pois.empty()) {
+        return pois.exportToCSV(filename);
+    }
+    return false;
+}
+
+bool RGDIC::DisplacementResult::exportToPOIFormat(const std::string& filename) const {
+    if (poisEnabled && !pois.empty()) {
+        return pois.exportToPOIFormat(filename);
+    }
+    return false;
+}
+
+// POI visualization functions implementation
+void RGDIC::displayPOIResults(const cv::Mat& refImage, const cv::Mat& defImage, 
+                             const DisplacementResult& result) {
+    if (!result.isPOIsEnabled() || result.pois.empty()) {
+        std::cout << "No POI data available for visualization." << std::endl;
+        return;
+    }
+    
+    // Create visualization of POI points on reference image
+    cv::Mat poiViz = refImage.clone();
+    if (poiViz.channels() == 1) {
+        cv::cvtColor(poiViz, poiViz, cv::COLOR_GRAY2BGR);
+    }
+    
+    // Draw POI points
+    for (const auto& poi : result.pois) {
+        cv::Scalar color = poi.valid ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
+        cv::circle(poiViz, cv::Point(static_cast<int>(poi.leftCoord.x), 
+                                    static_cast<int>(poi.leftCoord.y)), 
+                  3, color, -1);
+    }
+    
+    cv::imshow("POI Results", poiViz);
+    
+    // Display statistics
+    displayPOIStatistics(result.pois);
+}
+
+void RGDIC::displayPOICorrespondences(const cv::Mat& refImage, const cv::Mat& defImage,
+                                     const rgdic::POICollection& pois, int maxPoints) {
+    if (pois.empty()) {
+        std::cout << "No POI correspondences to display." << std::endl;
+        return;
+    }
+    
+    // Create side-by-side image
+    cv::Mat refBGR = refImage.clone();
+    cv::Mat defBGR = defImage.clone();
+    
+    if (refBGR.channels() == 1) cv::cvtColor(refBGR, refBGR, cv::COLOR_GRAY2BGR);
+    if (defBGR.channels() == 1) cv::cvtColor(defBGR, defBGR, cv::COLOR_GRAY2BGR);
+    
+    cv::Mat combined;
+    cv::hconcat(refBGR, defBGR, combined);
+    
+    // Get valid POIs and limit to maxPoints
+    auto validPOIs = pois.getValidPOIs();
+    int numToShow = std::min(maxPoints, static_cast<int>(validPOIs.size()));
+    
+    // Draw correspondences
+    for (int i = 0; i < numToShow; ++i) {
+        const auto& poi = validPOIs[i];
+        
+        cv::Point leftPt(static_cast<int>(poi.leftCoord.x), static_cast<int>(poi.leftCoord.y));
+        cv::Point rightPt(static_cast<int>(poi.rightCoord.x + refImage.cols), 
+                         static_cast<int>(poi.rightCoord.y));
+        
+        // Color based on correlation quality
+        cv::Scalar color;
+        if (poi.correlation > 0.9) color = cv::Scalar(0, 255, 0);      // Green - excellent
+        else if (poi.correlation > 0.8) color = cv::Scalar(0, 255, 255); // Yellow - good
+        else color = cv::Scalar(0, 128, 255);                            // Orange - fair
+        
+        cv::circle(combined, leftPt, 2, color, -1);
+        cv::circle(combined, rightPt, 2, color, -1);
+        cv::line(combined, leftPt, rightPt, color, 1);
+    }
+    
+    cv::imshow("POI Correspondences", combined);
+    std::cout << "Displaying " << numToShow << " POI correspondences out of " 
+              << validPOIs.size() << " valid POIs." << std::endl;
+}
+
+void RGDIC::displayPOIStatistics(const rgdic::POICollection& pois) {
+    if (pois.empty()) {
+        std::cout << "No POI statistics to display." << std::endl;
+        return;
+    }
+    
+    std::cout << "\n=== POI Statistics ===" << std::endl;
+    std::cout << "Total POIs: " << pois.size() << std::endl;
+    std::cout << "Valid POIs: " << pois.getValidCount() << std::endl;
+    std::cout << "Valid ratio: " << (100.0 * pois.getValidCount() / pois.size()) << "%" << std::endl;
+    std::cout << "Mean correlation: " << pois.getMeanCorrelation() << std::endl;
+    
+    cv::Vec2f meanDisp = pois.getMeanDisplacement();
+    std::cout << "Mean displacement: (" << meanDisp[0] << ", " << meanDisp[1] << ")" << std::endl;
+    
+    // Correlation distribution
+    std::vector<int> corrBins(5, 0); // [0-0.2, 0.2-0.4, 0.4-0.6, 0.6-0.8, 0.8-1.0]
+    for (const auto& poi : pois) {
+        if (poi.valid) {
+            int bin = std::min(4, static_cast<int>(poi.correlation * 5));
+            corrBins[bin]++;
+        }
+    }
+    
+    std::cout << "Correlation distribution:" << std::endl;
+    const char* binLabels[] = {"[0.0-0.2]", "[0.2-0.4]", "[0.4-0.6]", "[0.6-0.8]", "[0.8-1.0]"};
+    for (int i = 0; i < 5; ++i) {
+        std::cout << "  " << binLabels[i] << ": " << corrBins[i] << " POIs" << std::endl;
+    }
+    std::cout << "======================" << std::endl;
+}
